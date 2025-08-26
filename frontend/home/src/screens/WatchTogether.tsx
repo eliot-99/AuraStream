@@ -115,6 +115,7 @@ export default function WatchTogether() {
   const [room, setRoom] = useState('');
   const [password, setPassword] = useState('');
   const [liveCount, setLiveCount] = useState(0);
+  const [showProfile, setShowProfile] = useState(false);
   const keyRef = useRef<CryptoKey | null>(null);
 
   useEffect(() => {
@@ -131,9 +132,8 @@ export default function WatchTogether() {
   }, [ready]);
 
   const handleCreate = async () => {
-    // Client-side: encrypt metadata before sending to backend (stubbed)
-    // TODO: integrate /api/rooms/create with JWT+TOTP flow
-    alert('Create Room: encrypted metadata would be sent to backend.');
+    // Navigate to dedicated Create Room screen
+    location.hash = '#/create-room';
   };
 
   const handleJoin = async (e: React.FormEvent) => {
@@ -146,7 +146,7 @@ export default function WatchTogether() {
     <div className="relative min-h-screen overflow-hidden font-montserrat">
       {/* Background: same as Home.tsx */}
       <div className="absolute inset-0 -z-20">
-        <RippleGrid enableRainbow={false} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
+        <RippleGrid enableRainbow={true} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
       </div>
 
       {/* Top-left back button */}
@@ -157,13 +157,24 @@ export default function WatchTogether() {
         </button>
       </div>
 
-      {/* Top-right user/profile button */}
-      <div className="absolute top-4 right-4 z-20">
-        <button aria-label="User Profile" title="User Profile"
-          onClick={() => document.getElementById('profileModal')?.classList.remove('hidden')}
-          className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
-          <span className="text-white">👤</span>
-        </button>
+      {/* Top-right user/profile button with popover */}
+      <div className="absolute top-4 right-4 z-30">
+        {!showProfile && (
+          <button aria-label="User Profile" title="User Profile"
+            onClick={() => setShowProfile(true)}
+            className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
+            <span className="text-white">👤</span>
+          </button>
+        )}
+        {showProfile && (
+          <div className="mt-2 w-[320px] rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 p-4 text-white shadow-xl">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-semibold">User Profile</h2>
+              <button onClick={() => setShowProfile(false)} aria-label="Close" className="text-white/80 hover:text-white">✕</button>
+            </div>
+            <ProfileCard />
+          </div>
+        )}
       </div>
 
       <SecurityBadge />
@@ -203,35 +214,32 @@ export default function WatchTogether() {
             </motion.p>
           </div>
 
-          {/* CTA buttons styled like Home using StarBorder wrappers */}
-          <div className="mt-8 w-full max-w-xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-center md:justify-center gap-2 md:gap-3" role="group" aria-label="Primary actions">
-            <StarBorder as="button" aria-label="Create Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90 text-left" color="#ffffff" speed="7s" thickness={1}
-              onClick={handleCreate}
-            >
-              <span className="mr-2">➕</span>
-              Create Room
-            </StarBorder>
-
-            <form onSubmit={handleJoin} className="contents">
-              <StarBorder as="button" aria-label="Join Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90 text-right" color="#ffffff" speed="7s" thickness={1}
-                type="submit"
-              >
-                <span className="mr-2">⤴️</span>
-                Join Room
-              </StarBorder>
-            </form>
-          </div>
-
-          {/* Inline form fields below buttons */}
-          <form onSubmit={handleJoin} className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
+          {/* Swapped layout: Inputs on top row, Buttons below */}
+          <form onSubmit={handleJoin} className="mt-8 w-full max-w-xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-3 text-left" aria-label="Room access">
             <label className="text-sm text-white/80">
               Room name
-              <input value={room} onChange={e => setRoom(e.target.value)} required aria-label="Room name" className="mt-1 w-full px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" />
+              <input value={room} onChange={e => setRoom(e.target.value)} required aria-label="Room name" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" />
             </label>
             <label className="text-sm text-white/80">
               Password
-              <input value={password} onChange={e => setPassword(e.target.value)} required aria-label="Password" type="password" className="mt-1 w-full px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" />
+              <input value={password} onChange={e => setPassword(e.target.value)} required aria-label="Password" type="password" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" />
             </label>
+
+            {/* Primary actions stacked and centered */}
+            <div className="md:col-span-2 w-full flex flex-col items-center justify-center gap-4" role="group" aria-label="Primary actions">
+              <StarBorder as="button" aria-label="Join Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90" color="#ffffff" speed="7s" thickness={1}
+                type="submit">
+                <span className="mr-2">⤴️</span>
+                Join Room
+              </StarBorder>
+              <div className="text-white/80 text-sm">Create your own room</div>
+              <StarBorder as="button" aria-label="Create Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90" color="#ffffff" speed="7s" thickness={1}
+                type="button" onClick={handleCreate}>
+                <span className="mr-2">➕</span>
+                Create Room
+              </StarBorder>
+            </div>
+
             <div className="md:col-span-2 flex items-center justify-between text-xs text-white/70">
               <span aria-live="polite">{ready ? keyPreview : 'Preparing secure environment…'}</span>
               <span className="text-white/90">Live: {liveCount} • <span className="text-[#00ffff]">Privacy Protected</span></span>

@@ -7,9 +7,10 @@ import AudioPlayer from './screens/AudioPlayer';
 import VideoPlayer from './screens/VideoPlayer';
 import WatchTogether from './screens/WatchTogether';
 import Auth from './screens/Auth';
+import CreateRoom from './screens/CreateRoom';
 
 function App() {
-  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth'>('home');
+  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room'>('home');
   const [media, setMedia] = React.useState<{ url: string; name: string; kind: 'audio' | 'video' } | null>(null);
 
   // Simple hash-router to reach Auth before Together
@@ -20,6 +21,8 @@ function App() {
         setScreen(token ? 'together' : 'auth');
       } else if (location.hash === '#/auth') {
         setScreen('auth');
+      } else if (location.hash === '#/create-room') {
+        setScreen('create-room');
       } else if (location.hash === '#/home' || location.hash === '') {
         setScreen('home');
       }
@@ -34,6 +37,9 @@ function App() {
   }
   if (screen === 'auth') {
     return <Auth />;
+  }
+  if (screen === 'create-room') {
+    return <CreateRoom onBack={() => { location.hash = '#/watch-together'; }} />;
   }
   if (screen === 'together') {
     return <WatchTogether />;

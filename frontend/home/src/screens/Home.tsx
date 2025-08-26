@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import BoxesBackground from '../components/ui/BoxesBackground';
 import RippleGrid from '../components/background/RippleGrid';
 import { preLoadSecurity } from '../utils/security';
 import useVoiceCommands from '../hooks/useVoiceCommands';
@@ -41,7 +40,7 @@ export default function Home({ onStartSolo }: HomeProps) {
     <div className="relative min-h-screen overflow-hidden font-montserrat">
       {/* Visual background */}
       <div className="absolute inset-0 -z-20">
-        <RippleGrid enableRainbow={false} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
+        <RippleGrid enableRainbow={true} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
       </div>
 
       {/* Security badge */}
@@ -110,7 +109,7 @@ export default function Home({ onStartSolo }: HomeProps) {
             </StarBorder>
 
             <StarBorder as="a" id="watchTogether" aria-label="Watch Together button" className={`${buttonBase} text-white/90 text-right`} color="#ffffff" speed="7s" thickness={1}
-              href="#/auth"
+              href="#/watch-together"
             >
               <span className="mr-2">👥</span>
               Watch Together

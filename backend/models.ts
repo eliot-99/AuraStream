@@ -20,9 +20,28 @@ if (mongoose.models && mongoose.models.Room) {
 
 const RoomSchema = new Schema({
   name: { type: String, required: true, unique: true, index: true },
-  passHash: { type: String, required: true }, // sha256 of room password
+  // Client-side derived password verifier (e.g., argon2id hash string). Server never sees plaintext.
+  passVerifier: { type: String, required: true },
+  privacy: { type: String, enum: ['public', 'private'], default: 'private' },
   expiresAt: { type: Date, required: true }
 });
 
+// TTL index for automatic room expiration
+RoomSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 export type RoomDoc = InferSchemaType<typeof RoomSchema> & { _id: any };
 export const Room = mongoose.model('Room', RoomSchema);
+
+// Share tokens for short-lived shareable links
+if (mongoose.models && mongoose.models.ShareToken) {
+  delete mongoose.models.ShareToken;
+}
+const ShareTokenSchema = new Schema({
+  token: { type: String, required: true, unique: true, index: true },
+  roomName: { type: String, required: true, index: true },
+  expiresAt: { type: Date, required: true }
+});
+ShareTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export type ShareTokenDoc = InferSchemaType<typeof ShareTokenSchema> & { _id: any };
+export const ShareToken = mongoose.model('ShareToken', ShareTokenSchema);

@@ -11,7 +11,15 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { User, Room } from './models.js';
+import { User, Room, ShareToken } from './models.js';
+
+// Global error logging
+process.on('unhandledRejection', (reason) => {
+  console.error('[PROCESS][unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[PROCESS][uncaughtException]', err);
+});
 
 // Load .env from project root
 const __filename = fileURLToPath(import.meta.url);
@@ -28,14 +36,45 @@ const io = new SocketIOServer(server, {
 app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '10mb' }));
+
+// Request log middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  console.log('[REQ]', req.method, req.url);
+  res.on('finish', () => {
+    console.log('[RES]', req.method, req.url, '->', res.statusCode, `${Date.now() - start}ms`);
+  });
+  next();
+});
+
 app.use(rateLimit({ windowMs: 60_000, max: 120 }));
+
+// Basic health check
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, uptime: process.uptime() });
+});
 
 // Mongo connection
 (async () => {
   const uri = process.env.MONGO_URI as string;
-  if (!uri) throw new Error('MONGO_URI missing');
-  await mongoose.connect(uri);
-  console.log('MongoDB connected');
+  console.log('[BOOT] Loading configuration...');
+  console.log('[BOOT] PORT=%s CORS_ORIGIN=%s', process.env.PORT || 8080, process.env.CORS_ORIGIN || '*');
+  if (!uri) {
+    console.error('[BOOT][ERROR] MONGO_URI missing in .env');
+    process.exitCode = 1;
+    return;
+  }
+  console.log('[DB] Connecting to MongoDB...', uri.replace(/:\/\/.+@/,'://****:****@'));
+  try {
+    await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
+    console.log('[DB] MongoDB connected');
+    // Start server only after DB is ready
+    const PORT = Number(process.env.PORT || 8080);
+    server.listen(PORT, () => console.log('[HTTP] AuraStream backend listening on', PORT));
+  } catch (err: any) {
+    console.error('[DB][ERROR] Failed to connect to MongoDB:', err?.message || err);
+    process.exitCode = 1;
+  }
 })();
 
 function hashRoomPassword(pw: string) {
@@ -69,57 +108,120 @@ function decryptText(cipherB64: string, ivB64: string) {
 }
 
 // Rooms
+// Name validation: alphanumeric, no spaces, max 20
+const ROOM_NAME_RE = /^[A-Za-z0-9]{1,20}$/;
+
 app.get('/api/rooms/validate', async (req, res) => {
   const name = String(req.query.name || '');
-  const exists = !!(await Room.findOne({ name }));
-  res.json({ exists });
+  const valid = ROOM_NAME_RE.test(name);
+  const exists = valid ? !!(await Room.findOne({ name })) : false;
+  res.json({ valid, exists });
 });
 
+// Create room with client-side password verifier and privacy
 app.post('/api/rooms/create', async (req, res) => {
-  const { name, password } = req.body || {};
-  if (!name || !password) return res.status(400).json({ error: 'Missing fields' });
+  const { name, passVerifier, privacy } = (req.body || {}) as any;
+  if (!name || !passVerifier) return res.status(400).json({ error: 'Missing fields' });
+  if (!ROOM_NAME_RE.test(name)) return res.status(422).json({ error: 'Invalid room name' });
+
   const present = await Room.findOne({ name });
   if (present) return res.status(409).json({ error: 'Room already exists' });
+
   const ttlMin = Number(process.env.ROOM_TTL_MIN || 120);
   const expiresAt = new Date(Date.now() + ttlMin * 60_000);
-  const doc = await Room.create({ name, passHash: hashRoomPassword(password), expiresAt });
-  io.emit('roomCreated', { name, expiresAt });
-  res.json({ ok: true, name, expiresAt, token: crypto.randomBytes(16).toString('hex') });
+  const doc = await Room.create({ name, passVerifier, privacy: privacy === 'public' ? 'public' : 'private', expiresAt });
+  io.emit('roomCreated', { name, expiresAt, privacy: doc.privacy });
+  res.json({ ok: true, name, expiresAt, privacy: doc.privacy, token: crypto.randomBytes(16).toString('hex') });
 });
 
+// Join room by comparing verifier (server never sees plaintext password)
 app.post('/api/rooms/join', async (req, res) => {
-  const { name, password } = req.body || {};
+  const { name, passVerifier } = (req.body || {}) as any;
+  if (!name || !passVerifier) return res.status(400).json({ error: 'Missing fields' });
+
   const r = await Room.findOne({ name });
   if (!r) return res.status(404).json({ error: 'Not found' });
-  if (r.expiresAt.getTime() < Date.now()) { await Room.deleteOne({ _id: r._id }); return res.status(410).json({ error: 'Expired' }); }
-  if (r.passHash !== hashRoomPassword(password)) return res.status(401).json({ error: 'Unauthorized' });
+
+  if (r.expiresAt.getTime() < Date.now()) {
+    await Room.deleteOne({ _id: r._id });
+    return res.status(410).json({ error: 'Expired' });
+  }
+
+  if (r.passVerifier !== passVerifier) return res.status(401).json({ error: 'Unauthorized' });
+
   const token = crypto.randomBytes(16).toString('hex');
   res.json({ ok: true, name, token });
+});
+
+// Share: generate short-lived token for shareable link (default 5 minutes)
+app.get('/api/rooms/share', async (req, res) => {
+  const name = String(req.query.name || '');
+  if (!ROOM_NAME_RE.test(name)) return res.status(422).json({ error: 'Invalid room name' });
+
+  const r = await Room.findOne({ name });
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  if (r.expiresAt.getTime() < Date.now()) return res.status(410).json({ error: 'Expired' });
+
+  const ttlMin = Number(process.env.SHARE_TTL_MIN || 5);
+  const expiresAt = new Date(Date.now() + ttlMin * 60_000);
+  const token = crypto.randomBytes(24).toString('hex');
+  await ShareToken.create({ token, roomName: name, expiresAt });
+
+  // Build base URL
+  const proto = (req.headers['x-forwarded-proto'] as string) || (req.protocol || 'http');
+  const host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'localhost:8080';
+  const baseUrl = `${proto}://${host}`;
+  const shareUrl = `${baseUrl}/join?token=${encodeURIComponent(token)}`;
+
+  res.json({ ok: true, token, expiresAt, shareUrl });
+});
+
+// Minimal WebRTC signaling scaffold
+app.post('/api/webrtc/signal', async (req, res) => {
+  const { room, payload } = (req.body || {}) as any;
+  if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
+  io.to(room).emit('signal', payload);
+  io.to(room).emit('signalStart', { room, ts: Date.now() });
+  res.json({ ok: true });
 });
 
 // Users
 app.post('/api/users/register', async (req, res) => {
   const { username, email, password, avatarBase64 } = req.body || {};
+  console.log('[API][POST] /api/users/register body=%j', { username, hasEmail: !!email, hasAvatar: !!avatarBase64 });
   if (!username || !email || !password || !avatarBase64) return res.status(400).json({ error: 'Missing fields' });
-  const exists = await User.findOne({ username });
-  if (exists) return res.status(409).json({ error: 'Username taken' });
-  const passwordHash = await bcrypt.hash(password, 10);
-  const { cipher: emailCipher, iv: emailIv } = encryptText(email);
-  const { cipher: avatarCipher, iv: avatarIv } = encryptText(avatarBase64);
-  const u = await User.create({ username, emailCipher, emailIv, avatarCipher, avatarIv, passwordHash });
-  const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
-  res.json({ ok: true, token, profile: { username } });
+  try {
+    const exists = await User.findOne({ username });
+    if (exists) return res.status(409).json({ error: 'Username taken' });
+    const passwordHash = await bcrypt.hash(password, 10);
+    const { cipher: emailCipher, iv: emailIv } = encryptText(email);
+    const { cipher: avatarCipher, iv: avatarIv } = encryptText(avatarBase64);
+    const u = await User.create({ username, emailCipher, emailIv, avatarCipher, avatarIv, passwordHash });
+    const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
+    console.log('[API][POST] /api/users/register success userId=%s', u._id);
+    res.json({ ok: true, token, profile: { username } });
+  } catch (err: any) {
+    console.error('[API][POST] /api/users/register error:', err?.message || err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.post('/api/users/login', async (req, res) => {
   const { username, password } = req.body || {};
+  console.log('[API][POST] /api/users/login body=%j', { username, hasPassword: !!password });
   if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
-  const u = await User.findOne({ username });
-  if (!u) return res.status(404).json({ error: 'Not found' });
-  const ok = await bcrypt.compare(password, u.passwordHash);
-  if (!ok) return res.status(401).json({ error: 'Unauthorized' });
-  const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
-  res.json({ ok: true, token });
+  try {
+    const u = await User.findOne({ username });
+    if (!u) return res.status(404).json({ error: 'Not found' });
+    const ok = await bcrypt.compare(password, u.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'Unauthorized' });
+    const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
+    console.log('[API][POST] /api/users/login success userId=%s', u._id);
+    res.json({ ok: true, token });
+  } catch (err: any) {
+    console.error('[API][POST] /api/users/login error:', err?.message || err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // Auth middleware
@@ -137,12 +239,18 @@ function auth(req: any, res: any, next: any) {
 }
 
 app.get('/api/users/me', auth, async (req: any, res) => {
-  const u = await User.findById(req.user.sub);
-  if (!u) return res.status(404).json({ error: 'Not found' });
-  const email = decryptText(u.emailCipher, u.emailIv);
-  let avatar: string | undefined;
-  if (u.avatarCipher && u.avatarIv) avatar = decryptText(u.avatarCipher, u.avatarIv);
-  res.json({ ok: true, profile: { username: u.username, email, avatar } });
+  console.log('[API][GET] /api/users/me user=%j', req.user);
+  try {
+    const u = await User.findById(req.user.sub);
+    if (!u) return res.status(404).json({ error: 'Not found' });
+    const email = decryptText(u.emailCipher, u.emailIv);
+    let avatar: string | undefined;
+    if (u.avatarCipher && u.avatarIv) avatar = decryptText(u.avatarCipher, u.avatarIv);
+    res.json({ ok: true, profile: { username: u.username, email, avatar } });
+  } catch (err: any) {
+    console.error('[API][GET] /api/users/me error:', err?.message || err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 io.on('connection', (socket) => {
@@ -156,7 +264,3 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = Number(process.env.PORT || 8080);
-server.listen(PORT, () => {
-  console.log('AuraStream backend listening on', PORT);
-});
