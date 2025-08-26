@@ -6,16 +6,20 @@ import SoloSelect from './screens/SoloSelect';
 import AudioPlayer from './screens/AudioPlayer';
 import VideoPlayer from './screens/VideoPlayer';
 import WatchTogether from './screens/WatchTogether';
+import Auth from './screens/Auth';
 
 function App() {
-  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together'>('home');
+  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth'>('home');
   const [media, setMedia] = React.useState<{ url: string; name: string; kind: 'audio' | 'video' } | null>(null);
 
-  // Simple hash-router to reach Watch Together
+  // Simple hash-router to reach Auth before Together
   React.useEffect(() => {
     const apply = () => {
+      const token = localStorage.getItem('auth');
       if (location.hash === '#/watch-together') {
-        setScreen('together');
+        setScreen(token ? 'together' : 'auth');
+      } else if (location.hash === '#/auth') {
+        setScreen('auth');
       } else if (location.hash === '#/home' || location.hash === '') {
         setScreen('home');
       }
@@ -27,6 +31,9 @@ function App() {
 
   if (screen === 'home') {
     return <Home onStartSolo={() => setScreen('solo')} />;
+  }
+  if (screen === 'auth') {
+    return <Auth />;
   }
   if (screen === 'together') {
     return <WatchTogether />;
