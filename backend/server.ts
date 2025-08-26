@@ -21,7 +21,7 @@ const io = new SocketIOServer(server, {
 
 app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(rateLimit({ windowMs: 60_000, max: 120 }));
 
 // Mongo connection
@@ -93,15 +93,16 @@ app.post('/api/rooms/join', async (req, res) => {
 
 // Users
 app.post('/api/users/register', async (req, res) => {
-  const { username, email, password } = req.body || {};
-  if (!username || !email || !password) return res.status(400).json({ error: 'Missing fields' });
+  const { username, email, password, avatarBase64 } = req.body || {};
+  if (!username || !email || !password || !avatarBase64) return res.status(400).json({ error: 'Missing fields' });
   const exists = await User.findOne({ username });
   if (exists) return res.status(409).json({ error: 'Username taken' });
   const passwordHash = await bcrypt.hash(password, 10);
-  const { cipher, iv } = encryptText(email);
-  const u = await User.create({ username, emailCipher: cipher, emailIv: iv, passwordHash });
+  const { cipher: emailCipher, iv: emailIv } = encryptText(email);
+  const { cipher: avatarCipher, iv: avatarIv } = encryptText(avatarBase64);
+  const u = await User.create({ username, emailCipher, emailIv, avatarCipher, avatarIv, passwordHash });
   const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
-  res.json({ ok: true, token, profile: { username, emailMasked: email.replace(/(^.).*(@.*$)/, '$1***$2') } });
+  res.json({ ok: true, token, profile: { username } });
 });
 
 app.post('/api/users/login', async (req, res) => {

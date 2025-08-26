@@ -4,6 +4,8 @@ const UserSchema = new Schema({
   username: { type: String, required: true, unique: true, index: true },
   emailCipher: { type: String, required: true }, // base64(encrypted)
   emailIv: { type: String, required: true },
+  avatarCipher: { type: String, required: false }, // base64(encrypted)
+  avatarIv: { type: String, required: false },
   passwordHash: { type: String, required: true }, // bcrypt hash
   createdAt: { type: Date, default: Date.now }
 });
