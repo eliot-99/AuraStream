@@ -1,0 +1,7 @@
+/* Full-bleed canvas for Lightning */
+.lightning-container {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none; /* allow clicks through to UI */
+}

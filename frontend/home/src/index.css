@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Glassmorphic helpers */
+.glass {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.holo-shimmer {
+  position: relative;
+}
+.holo-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from 0deg, #ff0000, #ffa500, #ffff00, #008000, #0000ff, #4b0082, #ee82ee, #ff0000);
+  opacity: 0.12;
+  filter: blur(16px);
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+/* Remove neon glow from title */
+.neon-text { text-shadow: none; }
+
+/* Simplified buttons: subtle border only (no animated rainbow) */
+.btn {
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+}
+.btn:hover, .btn:focus {
+  transform: scale(1.02);
+}
+
+.pulse-badge {
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+.grid-faint {
+  background-image: linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px);
+  background-size: 32px 32px, 32px 32px;
+  background-position: center;
+  opacity: 0;
+  animation: gridfade 0.8s ease forwards;
+}
+@keyframes gridfade { to { opacity: 0.1; } }
