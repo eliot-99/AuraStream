@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
-import P5Particles from '../components/background/P5Particles';
+import StarBorder from '../components/ui/StarBorder';
 
 // Small lock icon
 const LockIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -105,13 +105,9 @@ export default function WatchTogether() {
 
   return (
     <div className="relative min-h-screen overflow-hidden font-montserrat">
-      {/* Background: glassmorphic with rainbow gradient and ripple particles */}
+      {/* Background: same as Home.tsx */}
       <div className="absolute inset-0 -z-20">
-        <div className="absolute inset-0" style={{
-          background: 'linear-gradient(120deg, rgba(255,0,0,.12), rgba(255,165,0,.12), rgba(255,255,0,.12), rgba(0,128,0,.12), rgba(0,0,255,.12), rgba(75,0,130,.12), rgba(238,130,238,.12))'
-        }} />
-        <RippleGrid enableRainbow={true} gridColor="#66e0ff" rippleIntensity={0.08} gridSize={10} gridThickness={12} fadeDistance={1.8} vignetteStrength={2.0} glowIntensity={0.14} opacity={0.65} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.9} />
-        <P5Particles />
+        <RippleGrid enableRainbow={false} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
       </div>
 
       <SecurityBadge />
@@ -119,33 +115,43 @@ export default function WatchTogether() {
       {/* Top security check bar */}
       <motion.div className="fixed top-0 left-0 right-0 h-[5px] bg-[#00ff00]" initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ duration: 2, ease: 'easeOut' }} style={{ transformOrigin: '0% 50%' }} aria-hidden />
 
-      {/* Heading */}
-      <main className="relative z-10 min-h-screen w-full flex items-center justify-center p-6">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="max-w-[48rem] w-[92vw] text-center">
-          <h1 className="text-4xl md:text-5xl font-bold text-white select-none">Watch Together</h1>
-          <NeonUnderline />
-          <motion.p className="mt-3 text-white/80 italic flex items-center justify-center gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2, duration: 0.4 }}>
-            Feel the Seamless Experience of Watching and Hearing Together
-            <LockIcon className="w-4 h-4 text-white" />
-          </motion.p>
+      {/* Center panel with StarBorder like Home */}
+      <main className="relative z-10 min-h-screen flex items-center justify-center p-6">
+        <StarBorder as={motion.div} className="max-w-[44rem] w-[90vw] text-center" color="#88ccff" speed="8s" thickness={2}
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          aria-live="polite"
+        >
+          <div className="py-4">
+            <h1 className="text-4xl md:text-5xl font-bold text-white select-none">Watch Together</h1>
+            <NeonUnderline />
+            <motion.p className="mt-3 text-white/80 italic flex items-center justify-center gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2, duration: 0.4 }}>
+              Feel the Seamless Experience of Watching and Hearing Together
+              <LockIcon className="w-4 h-4 text-white" />
+            </motion.p>
+          </div>
 
-          {/* Action buttons */}
-          <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <GlassBtn aria-label="Create Room button" onClick={handleCreate}>
-              <span>➕</span>
-              <span>Create Room</span>
-              <span className="text-[#00ff00] text-xs">Secure Create</span>
-            </GlassBtn>
+          {/* CTA buttons styled like Home using StarBorder wrappers */}
+          <div className="mt-8 w-full max-w-xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-center md:justify-between gap-4 md:gap-6" role="group" aria-label="Primary actions">
+            <StarBorder as="button" aria-label="Create Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90 text-left" color="#ffffff" speed="7s" thickness={1}
+              onClick={handleCreate}
+            >
+              <span className="mr-2">➕</span>
+              Create Room
+            </StarBorder>
+
             <form onSubmit={handleJoin} className="contents">
-              <GlassBtn aria-label="Join Room button" type="submit">
-                <span>⤴️</span>
-                <span>Join Room</span>
-                <span className="text-[#0000ff] text-xs">Safe Join</span>
-              </GlassBtn>
+              <StarBorder as="button" aria-label="Join Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90 text-right" color="#ffffff" speed="7s" thickness={1}
+                type="submit"
+              >
+                <span className="mr-2">⤴️</span>
+                Join Room
+              </StarBorder>
             </form>
           </div>
 
-          {/* Join modal fields inline for MVP */}
+          {/* Inline form fields below buttons */}
           <form onSubmit={handleJoin} className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
             <label className="text-sm text-white/80">
               Room name
@@ -160,7 +166,7 @@ export default function WatchTogether() {
               <span className="text-white/90">Live: {liveCount} • <span className="text-[#00ffff]">Privacy Protected</span></span>
             </div>
           </form>
-        </motion.div>
+        </StarBorder>
       </main>
     </div>
   );
