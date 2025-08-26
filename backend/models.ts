@@ -13,6 +13,11 @@ const UserSchema = new Schema({
 export type UserDoc = InferSchemaType<typeof UserSchema> & { _id: any };
 export const User = mongoose.model('User', UserSchema);
 
+// Avoid model overwrite in watch mode
+if (mongoose.models && mongoose.models.Room) {
+  delete mongoose.models.Room;
+}
+
 const RoomSchema = new Schema({
   name: { type: String, required: true, unique: true, index: true },
   passHash: { type: String, required: true }, // sha256 of room password

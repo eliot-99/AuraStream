@@ -72,6 +72,44 @@ async function exportKey(key: CryptoKey) {
 }
 
 // Screen
+function useProfile() {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<{ username: string; email: string; avatar?: string } | null>(null);
+  useEffect(() => {
+    const token = localStorage.getItem('auth');
+    if (!token) { setLoading(false); return; }
+    fetch('/api/users/me', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(j => { if (j?.ok) setData(j.profile); })
+      .finally(() => setLoading(false));
+  }, []);
+  return { loading, data };
+}
+
+function ProfileCard() {
+  const { loading, data } = useProfile();
+  if (loading) return <div className="text-white/70">Loading…</div>;
+  if (!data) return <div className="text-white/70">Not logged in</div>;
+  return (
+    <div className="grid gap-3 text-left">
+      <div className="flex items-center gap-3">
+        {data.avatar ? (
+          <img src={data.avatar} alt="Avatar" className="h-12 w-12 rounded-full object-cover border border-white/30" />
+        ) : (
+          <div className="h-12 w-12 rounded-full bg-white/10 border border-white/20 flex items-center justify-center">👤</div>
+        )}
+        <div>
+          <div className="text-white font-semibold">{data.username}</div>
+          <div className="text-white/70 text-sm">{data.email}</div>
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button onClick={() => { localStorage.removeItem('auth'); location.hash = '#/auth'; }} className="px-4 py-2 rounded-lg bg-white/10 border border-white/20">Logout</button>
+      </div>
+    </div>
+  );
+}
+
 export default function WatchTogether() {
   const [ready, setReady] = useState(false);
   const [room, setRoom] = useState('');
@@ -209,15 +247,7 @@ export default function WatchTogether() {
             <h2 className="text-lg font-semibold">User Profile</h2>
             <button onClick={() => document.getElementById('profileModal')?.classList.add('hidden')} aria-label="Close" className="text-white/80 hover:text-white">✕</button>
           </div>
-          <form onSubmit={(e) => { e.preventDefault(); /* TODO: call /api/users/register or /api/users/login */ alert('Profile submit'); }} className="grid gap-3">
-            <input placeholder="Username" aria-label="Username" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
-            <input placeholder="Email" aria-label="Email" type="email" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
-            <input placeholder="Password" aria-label="Password" type="password" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
-            <div className="flex items-center justify-end gap-2">
-              <button type="button" onClick={() => document.getElementById('profileModal')?.classList.add('hidden')} className="px-4 py-2 rounded-lg bg-white/10 border border-white/20">Cancel</button>
-              <button type="submit" className="px-4 py-2 rounded-lg bg-cyan-500/80 hover:bg-cyan-500 text-black font-semibold">Save</button>
-            </div>
-          </form>
+          <ProfileCard />
         </div>
       </div>
     </div>

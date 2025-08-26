@@ -5,13 +5,19 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { User, Room } from './models';
+import { User, Room } from './models.js';
 
-dotenv.config();
+// Load .env from project root
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootEnvPath = path.resolve(__dirname, '..', '..', '.env');
+dotenv.config({ path: rootEnvPath });
 
 const app = express();
 const server = http.createServer(app);
@@ -113,8 +119,30 @@ app.post('/api/users/login', async (req, res) => {
   const ok = await bcrypt.compare(password, u.passwordHash);
   if (!ok) return res.status(401).json({ error: 'Unauthorized' });
   const token = jwt.sign({ sub: u._id.toString(), username }, process.env.JWT_SECRET || 'dev', { expiresIn: '1h' });
-  const emailPlain = decryptText(u.emailCipher, u.emailIv);
-  res.json({ ok: true, token, profile: { username, email: emailPlain } });
+  res.json({ ok: true, token });
+});
+
+// Auth middleware
+function auth(req: any, res: any, next: any) {
+  const hdr = req.headers.authorization || '';
+  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const data = jwt.verify(token, process.env.JWT_SECRET || 'dev') as any;
+    req.user = data;
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+app.get('/api/users/me', auth, async (req: any, res) => {
+  const u = await User.findById(req.user.sub);
+  if (!u) return res.status(404).json({ error: 'Not found' });
+  const email = decryptText(u.emailCipher, u.emailIv);
+  let avatar: string | undefined;
+  if (u.avatarCipher && u.avatarIv) avatar = decryptText(u.avatarCipher, u.avatarIv);
+  res.json({ ok: true, profile: { username: u.username, email, avatar } });
 });
 
 io.on('connection', (socket) => {
