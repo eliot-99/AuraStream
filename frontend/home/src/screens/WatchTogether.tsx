@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
+import TextPressure from '../components/ui/TextPressure';
 
 // Small lock icon
 const LockIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -112,8 +113,7 @@ export default function WatchTogether() {
 
       <SecurityBadge />
 
-      {/* Top security check bar */}
-      <motion.div className="fixed top-0 left-0 right-0 h-[5px] bg-[#00ff00]" initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ duration: 2, ease: 'easeOut' }} style={{ transformOrigin: '0% 50%' }} aria-hidden />
+
 
       {/* Center panel with StarBorder like Home */}
       <main className="relative z-10 min-h-screen flex items-center justify-center p-6">
@@ -124,9 +124,25 @@ export default function WatchTogether() {
           aria-live="polite"
         >
           <div className="py-4">
-            <h1 className="text-4xl md:text-5xl font-bold text-white select-none">Watch Together</h1>
-            <NeonUnderline />
-            <motion.p className="mt-3 text-white/80 italic flex items-center justify-center gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2, duration: 0.4 }}>
+            {/* Match Home's interactive title using TextPressure */}
+            <div className="w-full max-w-[42rem] mx-auto h-[72px] md:h-[96px]">
+              <TextPressure
+                text="Watch Together"
+                className="select-none"
+                fontFamily="Compressa VF"
+                fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
+                width={true}
+                weight={true}
+                italic={true}
+                alpha={false}
+                flex={false}
+                stroke={false}
+                scale={false}
+                textColor="#ffffff"
+                minFontSize={40}
+              />
+            </div>
+            <motion.p className="mt-3 text-white/80 not-italic flex items-center justify-center gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2, duration: 0.4 }}>
               Feel the Seamless Experience of Watching and Hearing Together
               <LockIcon className="w-4 h-4 text-white" />
             </motion.p>
