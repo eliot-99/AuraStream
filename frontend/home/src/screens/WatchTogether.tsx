@@ -111,6 +111,23 @@ export default function WatchTogether() {
         <RippleGrid enableRainbow={false} gridColor="#8ab4ff" rippleIntensity={0.06} gridSize={10} gridThickness={12} fadeDistance={1.6} vignetteStrength={1.8} glowIntensity={0.12} opacity={0.6} gridRotation={0} mouseInteraction={true} mouseInteractionRadius={0.8} />
       </div>
 
+      {/* Top-left back button */}
+      <div className="absolute top-4 left-4 z-20">
+        <button onClick={() => (window.location.hash = '#/home')} aria-label="Back" title="Back"
+          className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
+          <span className="text-white">←</span>
+        </button>
+      </div>
+
+      {/* Top-right user/profile button */}
+      <div className="absolute top-4 right-4 z-20">
+        <button aria-label="User Profile" title="User Profile"
+          onClick={() => document.getElementById('profileModal')?.classList.remove('hidden')}
+          className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
+          <span className="text-white">👤</span>
+        </button>
+      </div>
+
       <SecurityBadge />
 
 
@@ -149,7 +166,7 @@ export default function WatchTogether() {
           </div>
 
           {/* CTA buttons styled like Home using StarBorder wrappers */}
-          <div className="mt-8 w-full max-w-xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-center md:justify-between gap-4 md:gap-6" role="group" aria-label="Primary actions">
+          <div className="mt-8 w-full max-w-xl mx-auto flex flex-col md:flex-row items-stretch md:items-center justify-center md:justify-center gap-2 md:gap-3" role="group" aria-label="Primary actions">
             <StarBorder as="button" aria-label="Create Room button" className="px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none text-white/90 text-left" color="#ffffff" speed="7s" thickness={1}
               onClick={handleCreate}
             >
@@ -184,6 +201,25 @@ export default function WatchTogether() {
           </form>
         </StarBorder>
       </main>
+
+      {/* Profile modal */}
+      <div id="profileModal" className="hidden fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4">
+        <div className="w-full max-w-md rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 p-5 text-white">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">User Profile</h2>
+            <button onClick={() => document.getElementById('profileModal')?.classList.add('hidden')} aria-label="Close" className="text-white/80 hover:text-white">✕</button>
+          </div>
+          <form onSubmit={(e) => { e.preventDefault(); /* TODO: call /api/users/register or /api/users/login */ alert('Profile submit'); }} className="grid gap-3">
+            <input placeholder="Username" aria-label="Username" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
+            <input placeholder="Email" aria-label="Email" type="email" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
+            <input placeholder="Password" aria-label="Password" type="password" className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" required />
+            <div className="flex items-center justify-end gap-2">
+              <button type="button" onClick={() => document.getElementById('profileModal')?.classList.add('hidden')} className="px-4 py-2 rounded-lg bg-white/10 border border-white/20">Cancel</button>
+              <button type="submit" className="px-4 py-2 rounded-lg bg-cyan-500/80 hover:bg-cyan-500 text-black font-semibold">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
