@@ -109,8 +109,8 @@ export default function Home({ onStartSolo }: HomeProps) {
 
             </StarBorder>
 
-            <StarBorder as="button" id="watchTogether" aria-label="Watch Together button" className={`${buttonBase} text-white/90 text-right`} color="#ffffff" speed="7s" thickness={1}
-              onClick={() => console.log('Navigate: Watch Together Screen (placeholder)')}
+            <StarBorder as="a" id="watchTogether" aria-label="Watch Together button" className={`${buttonBase} text-white/90 text-right`} color="#ffffff" speed="7s" thickness={1}
+              href="#/watch-together"
             >
               <span className="mr-2">👥</span>
               Watch Together
