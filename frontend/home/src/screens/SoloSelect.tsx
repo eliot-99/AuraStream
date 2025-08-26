@@ -75,7 +75,9 @@ export default function SoloSelect({ onBack, onPicked }: SoloSelectProps) {
           aria-label="Back to Home"
           className="h-8 w-8 rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-white flex items-center justify-center hover:scale-110 transition-transform"
         >
-          ⟵
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true" className="text-white">
+            <polygon points="15,4 5,12 15,20" />
+          </svg>
         </button>
         {/* Right side intentionally empty for minimal UI */}
         <div />

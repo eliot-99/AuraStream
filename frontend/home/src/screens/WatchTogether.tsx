@@ -153,7 +153,9 @@ export default function WatchTogether() {
       <div className="absolute top-4 left-4 z-20">
         <button onClick={() => (window.location.hash = '#/home')} aria-label="Back" title="Back"
           className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
-          <span className="text-white">←</span>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" className="text-white">
+            <polygon points="15,4 5,12 15,20" />
+          </svg>
         </button>
       </div>
 
