@@ -7,6 +7,11 @@ const UserSchema = new Schema({
   avatarCipher: { type: String, required: false }, // base64(encrypted)
   avatarIv: { type: String, required: false },
   passwordHash: { type: String, required: true }, // bcrypt hash
+  // Password reset fields
+  resetOtpHash: { type: String, required: false },
+  resetOtpExpiresAt: { type: Date, required: false },
+  resetToken: { type: String, required: false },
+  resetTokenExpiresAt: { type: Date, required: false },
   createdAt: { type: Date, default: Date.now }
 });
 

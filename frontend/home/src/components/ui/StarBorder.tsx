@@ -7,6 +7,8 @@ type StarBorderProps<T extends React.ElementType> = React.ComponentPropsWithoutR
   color?: string;
   speed?: React.CSSProperties['animationDuration'];
   thickness?: number;
+  innerClassName?: string; // allow overriding inner padding/size
+  roundedClass?: string; // allows using rounded-full for circles
 };
 
 const StarBorder = <T extends React.ElementType = 'button'>(
@@ -16,14 +18,17 @@ const StarBorder = <T extends React.ElementType = 'button'>(
     color = 'white',
     speed = '6s',
     thickness = 1,
+    innerClassName,
+    roundedClass,
     children,
     ...rest
   }: StarBorderProps<T>
 ) => {
   const Component = (as || 'button') as any;
+  const rounded = roundedClass || 'rounded-[20px]';
   return (
     <Component
-      className={`relative inline-block overflow-hidden rounded-[20px] ${className}`}
+      className={`relative inline-block overflow-hidden ${rounded} ${className}`}
       {...(rest as any)}
       style={{
         padding: `${thickness}px 0`,
@@ -31,20 +36,20 @@ const StarBorder = <T extends React.ElementType = 'button'>(
       }}
     >
       <div
-        className="absolute w-[300%] h-[50%] opacity-70 bottom-[-11px] right-[-250%] rounded-full animate-star-movement-bottom z-0"
+        className={`absolute w-[300%] h-[50%] opacity-70 bottom-[-11px] right-[-250%] rounded-full animate-star-movement-bottom z-0`}
         style={{
           background: `radial-gradient(circle, ${color}, transparent 10%)`,
           animationDuration: speed,
         }}
       />
       <div
-        className="absolute w-[300%] h-[50%] opacity-70 top-[-10px] left-[-250%] rounded-full animate-star-movement-top z-0"
+        className={`absolute w-[300%] h-[50%] opacity-70 top-[-10px] left-[-250%] rounded-full animate-star-movement-top z-0`}
         style={{
           background: `radial-gradient(circle, ${color}, transparent 10%)`,
           animationDuration: speed,
         }}
       />
-      <div className="relative z-10 bg-gradient-to-b from-black to-gray-900 border border-gray-800 text-white text-center text-[16px] py-[16px] px-[26px] rounded-[20px]">
+      <div className={`relative z-10 bg-gradient-to-b from-black to-gray-900 border border-gray-800 text-white text-center text-[16px] py-[16px] px-[26px] ${rounded} ${innerClassName || ''}`}>
         {children}
       </div>
     </Component>

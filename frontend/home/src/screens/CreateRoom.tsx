@@ -1,6 +1,5 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import QRCode from 'qrcode';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
 import TextPressure from '../components/ui/TextPressure';
@@ -27,22 +26,27 @@ function saltFromRoom(name: string): Uint8Array {
   return new TextEncoder().encode(`aurastream:${name}`);
 }
 
-async function deriveVerifierArgon2id(room: string, password: string): Promise<string> {
-  // Load argon2-browser lazily to reduce initial bundle
-  const { hash } = await import('argon2-browser');
+async function deriveVerifier(room: string, password: string): Promise<string> {
+  // PBKDF2 via WebCrypto — no WASM, works in all modern browsers
+  const enc = new TextEncoder();
   const salt = saltFromRoom(room);
-  const result = await hash({
-    pass: password,
-    salt,
-    type: 2, // argon2id
-    time: 3,
-    mem: 19456, // ~19MB
-    parallelism: 1,
-    hashLen: 32,
-    // output encoded string like $argon2id$v=19$m=...,t=...,p=...$salt$hash
-    // which is portable and includes params
-  });
-  return result.encoded;
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' },
+    baseKey,
+    256
+  );
+  const bytes = new Uint8Array(bits);
+  // Base64 encode
+  let b64 = '';
+  for (let i = 0; i < bytes.length; i++) b64 += String.fromCharCode(bytes[i]);
+  return btoa(b64);
 }
 
 type Props = { onBack?: () => void; };
@@ -54,8 +58,6 @@ export default function CreateRoom({ onBack }: Props) {
   const [nameValid, setNameValid] = React.useState<boolean | null>(null);
   const [nameExists, setNameExists] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
-  const [shareUrl, setShareUrl] = React.useState<string | null>(null);
-  const [qrDataUrl, setQrDataUrl] = React.useState<string | null>(null);
   const strength = estimateStrength(password);
 
   // Debounced validation against backend
@@ -80,13 +82,13 @@ export default function CreateRoom({ onBack }: Props) {
     return () => clearTimeout(t);
   }, [roomName]);
 
-  async function handleCreate() {
+  async function handleCreate(): Promise<string | null> {
     const name = roomName.trim();
-    if (!ROOM_NAME_RE.test(name)) return alert('Invalid room name. Use 1-20 alphanumeric characters, no spaces.');
-    if (privacy !== 'public' && password.length < 6) return alert('Password must be at least 6 characters.');
+    if (!ROOM_NAME_RE.test(name)) { alert('Invalid room name. Use 1-20 alphanumeric characters, no spaces.'); return null; }
+    if (privacy !== 'public' && password.length < 6) { alert('Password must be at least 6 characters.'); return null; }
     setLoading(true);
     try {
-      const passVerifier = privacy === 'public' ? '' : await deriveVerifierArgon2id(name, password);
+      const passVerifier = privacy === 'public' ? '' : await deriveVerifier(name, password);
       const res = await fetch(`${API_BASE}/api/rooms/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,34 +96,19 @@ export default function CreateRoom({ onBack }: Props) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Failed to create');
-      // Navigate to watch together flow
+      // Store room context for later navigation if needed
       sessionStorage.setItem('room', name);
       sessionStorage.setItem('roomPrivacy', data.privacy || privacy);
-      location.hash = '#/watch-together';
+      return name;
     } catch (err: any) {
       alert(err?.message || 'Failed to create room');
+      return null;
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleShare() {
-    const name = roomName.trim();
-    if (!ROOM_NAME_RE.test(name)) return alert('Enter a valid room name first');
-    try {
-      const res = await fetch(`${API_BASE}/api/rooms/share?name=${encodeURIComponent(name)}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to generate link');
-      setShareUrl(data.shareUrl);
-      const url = await QRCode.toDataURL(data.shareUrl, { margin: 1, width: 200 });
-      setQrDataUrl(url);
-      await navigator.clipboard.writeText(data.shareUrl);
-      // Simple toast
-      alert('Link Copied!');
-    } catch (err: any) {
-      alert(err?.message || 'Failed to generate share link');
-    }
-  }
+
 
   const fieldBase = 'backdrop-blur-md bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/70 outline-none focus:ring-2 focus:ring-white/40 transition';
   const labelBase = 'text-white text-sm mb-1';
@@ -227,27 +214,37 @@ export default function CreateRoom({ onBack }: Props) {
             </div>
 
             {/* Actions: use the same subtle button effect as Home (StarBorder) */}
-            <div className="w-full flex flex-col md:flex-row items-stretch md:items-center justify-center gap-3" role="group" aria-label="Actions">
-              <StarBorder as="button" aria-label="Share Link button" className="px-5 py-3 text-white/90" color="#ffffff" speed="7s" thickness={1}
-                onClick={handleShare}
+            <div className="w-full flex items-stretch justify-center gap-3" role="group" aria-label="Actions">
+              <StarBorder
+                as="button"
+                aria-label="Create Room button"
+                className="px-5 py-3 text-white/90"
+                color="#ffffff"
+                speed={"7s"}
+                thickness={1}
+                onClick={async () => {
+                  const name = await handleCreate();
+                  if (name) {
+                    try {
+                      const res = await fetch(`${API_BASE}/api/rooms/share?name=${encodeURIComponent(name)}`);
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data?.error || 'Failed to generate link');
+                      const joinUrl = data.shareUrl as string;
+                      await navigator.clipboard.writeText(joinUrl);
+                      alert('Room joining link copied to your clipbord');
+                      // Navigate to shared screen after copying
+                      const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+                      window.location.href = url;
+                    } catch (err: any) {
+                      alert(err?.message || 'Failed to copy room link');
+                    }
+                  }
+                }}
+                disabled={loading}
               >
-                Share Link
-              </StarBorder>
-              <StarBorder as="button" aria-label="Enter Room button" className="px-5 py-3 text-white/90" color="#ffffff" speed="7s" thickness={1}
-                onClick={handleCreate} disabled={loading}
-              >
-                {loading ? 'Creating…' : 'Enter Room'}
+                {loading ? 'Creating…' : 'Create Room'}
               </StarBorder>
             </div>
-
-            {/* QR inline panel */}
-            {qrDataUrl && shareUrl && (
-              <div className="mt-2 p-4 rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 text-center">
-                <div className="text-white mb-2">Share QR (expires soon)</div>
-                <img src={qrDataUrl} alt="QR" className="mx-auto" />
-                <div className="text-xs text-white/70 break-all mt-2">{shareUrl}</div>
-              </div>
-            )}
           </div>
         </StarBorder>
       </main>

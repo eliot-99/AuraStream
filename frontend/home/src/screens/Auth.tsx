@@ -7,6 +7,7 @@ import TextPressure from '../components/ui/TextPressure';
 export default function Auth() {
   const [mode, setMode] = useState<'login'|'signup'>('login');
   const [form, setForm] = useState<{ username: string; email?: string; password: string; avatarFile?: File | null }>({ username: '', email: '', password: '', avatarFile: null });
+  const [error, setError] = useState<string | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const buttonBase = 'px-5 py-3 transition-transform hover:scale-[1.02] focus:scale-[1.02] outline-none';
@@ -38,6 +39,7 @@ export default function Auth() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
     setBusy(true);
     try {
       if (mode === 'signup') {
@@ -47,8 +49,8 @@ export default function Auth() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: form.username, email: form.email, password: form.password, avatarBase64 })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Signup failed');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.token) throw new Error(data?.error || 'Signup failed');
         localStorage.setItem('auth', data.token);
         location.hash = '#/watch-together';
       } else {
@@ -56,13 +58,73 @@ export default function Auth() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: form.username, password: form.password })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Login failed');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.token) throw new Error(data?.error || 'Login failed');
         localStorage.setItem('auth', data.token);
         location.hash = '#/watch-together';
       }
     } catch (e) {
-      alert((e as Error).message);
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Forgot Password actions
+  const startForgot = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await fetch('/api/users/forgot/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usernameOrEmail: fpUser })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to send OTP');
+      setFpHint(data.hint || '');
+      setFpStep('otp-sent');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await fetch('/api/users/forgot/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usernameOrEmail: fpUser, otp: fpOtp })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.resetToken) throw new Error(data?.error || 'Invalid OTP');
+      setFpToken(data.resetToken);
+      setFpStep('verified');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await fetch('/api/users/forgot/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resetToken: fpToken, newPassword: fpNewPw })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to reset password');
+      // After reset, go back to login
+      setMode('login');
+      setFpStep('idle');
+      setFpUser(''); setFpOtp(''); setFpToken(''); setFpNewPw(''); setFpHint('');
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -106,8 +168,15 @@ export default function Auth() {
             </motion.p>
           </div>
 
+          {/* Error banner */}
+          {error && (
+            <div className="max-w-md mx-auto mb-3 text-sm text-red-200 bg-red-900/30 border border-red-500/50 rounded-md p-2">
+              {error}
+            </div>
+          )}
+
           {/* Form */}
-          <form onSubmit={submit} className="mt-6 grid grid-cols-1 gap-4 text-left max-w-md mx-auto">
+          <form onSubmit={submit} className="mt-4 grid grid-cols-1 gap-4 text-left max-w-md mx-auto">
             <label className="text-sm text-white/80">
               Username
               <input value={form.username} onChange={e => setForm(p => ({ ...p, username: e.target.value }))} required aria-label="Username" placeholder="Enter username" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400 placeholder-white/40" />
@@ -140,11 +209,16 @@ export default function Auth() {
               </div>
             )}
 
-            {/* Actions: stacked button; helper link below */}
+            {/* Actions: stacked button; helper links */}
             <div className="mt-2 grid gap-3" role="group" aria-label="Auth actions">
               <StarBorder as="button" className={`${buttonBase} text-white/90`} color="#ffffff" speed="7s" thickness={1} type="submit" disabled={busy}>
                 {busy ? 'Please wait…' : (mode === 'signup' ? 'Create Account' : 'Login')}
               </StarBorder>
+              {mode === 'login' && (
+                <button type="button" className="text-sm underline text-white/80" onClick={() => { location.hash = '#/forgot-password'; }}>
+                  Forgot password?
+                </button>
+              )}
               <p className="text-white/70 text-sm text-center">
                 {mode === 'signup' ? (
                   <>
@@ -160,6 +234,8 @@ export default function Auth() {
               </p>
             </div>
           </form>
+
+
         </StarBorder>
       </main>
     </div>

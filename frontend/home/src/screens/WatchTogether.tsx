@@ -79,8 +79,16 @@ function useProfile() {
     const token = localStorage.getItem('auth');
     if (!token) { setLoading(false); return; }
     fetch('/api/users/me', { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
-      .then(j => { if (j?.ok) setData(j.profile); })
+      .then(async r => {
+        if (!r.ok) throw new Error(`status:${r.status}`);
+        const j = await r.json();
+        if (j?.ok) setData(j.profile);
+      })
+      .catch(() => {
+        // Token invalid/expired — force re-auth
+        try { localStorage.removeItem('auth'); } catch {}
+        location.hash = '#/auth';
+      })
       .finally(() => setLoading(false));
   }, []);
   return { loading, data };
@@ -138,9 +146,14 @@ export default function WatchTogether() {
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: secure handshake to /api/rooms/join (JWT + optional 2FA)
-    alert('Join Room: secure handshake (JWT/2FA) would be performed.');
+    // Open Shared Room in a new tab without replacing current screen
+    const name = room.trim();
+    if (!name) return alert('Enter room name');
+    const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+    window.open(url, '_blank');
   };
+
+
 
   return (
     <div className="relative min-h-screen overflow-hidden font-montserrat">
