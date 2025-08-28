@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
 import TextPressure from '../components/ui/TextPressure';
+import PasswordField from '../components/ui/PasswordField';
 
 export default function ForgotPassword() {
   const [step, setStep] = useState<'start'|'otp'|'reset'>('start');
@@ -116,7 +117,7 @@ export default function ForgotPassword() {
               <>
                 <label className="text-sm text-white/80">
                   New Password
-                  <input value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Enter new password" type="password" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400 placeholder-white/40" />
+                  <PasswordField value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Enter new password" ariaLabel="New Password" />
                 </label>
                 <StarBorder as="button" className={`${buttonBase} text-white/90`} color="#ffffff" speed="7s" thickness={1} onClick={reset} disabled={busy || newPassword.length < 6}>
                   {busy ? 'Saving…' : 'Set New Password'}

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
 import TextPressure from '../components/ui/TextPressure';
+import PasswordField from '../components/ui/PasswordField';
 
 // Lightweight password strength estimator
 function estimateStrength(pw: string) {
@@ -178,13 +179,13 @@ export default function CreateRoom({ onBack }: Props) {
             {/* Password */}
             <label className="text-sm text-white/80">
               Enter Password
-              <input
-                type="password"
-                className="mt-1 w-full px-4 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/70 outline-none focus:ring-2 focus:ring-white/40 transition disabled:opacity-50"
+              <PasswordField
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={privacy === 'public' ? 'Disabled for public rooms' : 'Enter Password'}
                 disabled={privacy === 'public'}
+                ariaLabel="Room Password"
+                inputClassName="px-4"
               />
               {privacy !== 'public' && (
                 <div className="mt-1 text-xs flex items-center gap-2">
