@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
 import TextPressure from '../components/ui/TextPressure';
+import PasswordField from '../components/ui/PasswordField';
 
 // Small lock icon
 const LockIcon = (props: React.SVGProps<SVGSVGElement>) => (
@@ -237,7 +238,7 @@ export default function WatchTogether() {
             </label>
             <label className="text-sm text-white/80">
               Password
-              <input value={password} onChange={e => setPassword(e.target.value)} required aria-label="Password" type="password" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400" />
+              <PasswordField value={password} onChange={e => setPassword(e.target.value)} ariaLabel="Password" placeholder="Enter password" />
             </label>
 
             {/* Primary actions stacked and centered */}

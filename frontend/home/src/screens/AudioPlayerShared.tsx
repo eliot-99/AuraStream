@@ -654,48 +654,45 @@ export default function AudioPlayer({ onBack, src, name }: Props) {
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto max-h-[calc(100%-52px)] p-2 space-y-3">
-          {/* Calling controls (from SharedRoom) */}
-          <div className="rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 p-3 text-white">
-            {/* Avatars column with glow */}
-            <div className="flex flex-col items-center gap-4">
+        <div className="h-[calc(100%-52px)] overflow-y-auto p-0">
+          {/* Full-height call sidebar content */}
+          <div className="flex flex-col h-full text-white">
+            {/* Avatars at top - larger rectangles */}
+            <div className="px-4 pt-4 pb-2 flex flex-col items-center gap-6">
               <div className="relative">
-                <div className="absolute inset-[-6px] rounded-full blur-[10px]" style={{ boxShadow: '0 0 24px rgba(59,130,246,0.45), 0 0 36px rgba(16,185,129,0.35)' }} />
-                <div className="w-16 h-16 rounded-full bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center">
-                  {/* Swap for session avatars if needed */}
-                  <span>🧑</span>
+                <div className="absolute inset-[-10px] rounded-xl blur-[16px]" style={{ boxShadow: '0 0 40px rgba(59,130,246,0.5), 0 0 64px rgba(16,185,129,0.35)' }} />
+                <div className="w-28 h-20 rounded-xl bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center">
+                  <span className="text-2xl">🧑</span>
                 </div>
               </div>
               <div className="relative">
-                <div className="absolute inset-[-6px] rounded-full blur-[10px]" style={{ boxShadow: '0 0 24px rgba(236,72,153,0.45), 0 0 36px rgba(168,85,247,0.35)' }} />
-                <div className="w-16 h-16 rounded-full bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center">
-                  <span>👤</span>
+                <div className="absolute inset-[-10px] rounded-xl blur-[16px]" style={{ boxShadow: '0 0 40px rgba(236,72,153,0.5), 0 0 64px rgba(168,85,247,0.35)' }} />
+                <div className="w-28 h-20 rounded-xl bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center">
+                  <span className="text-2xl">👤</span>
                 </div>
               </div>
             </div>
 
-            {/* Buttons: Open Video / Open Audio */}
-            <div className="mt-4 flex items-center justify-center gap-3">
+            {/* Buttons under avatars - larger */}
+            <div className="px-4 pb-2 flex items-center justify-center gap-4">
               <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-cam' }); } catch {} }}
-                title="Open Video" className="h-10 w-10 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
+                title="Open Video" className="h-12 w-12 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
               </button>
               <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-mic' }); } catch {} }}
-                title="Open Audio" className="h-10 w-10 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+                title="Open Audio" className="h-12 w-12 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
               </button>
             </div>
 
-            {/* Message box */}
-            <div className="mt-4">
-              <form onSubmit={(e) => { e.preventDefault(); try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; if (msg.trim()) { s?.emit('sync', { type: 'chat', text: msg.trim() }); setMsg(''); } } catch {} }} className="flex items-center gap-2">
-                <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message..." className="flex-1 px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" />
-                <button type="submit" className="h-9 px-3 rounded-lg bg-white/10 border border-white/20 hover:bg-white/20">Send</button>
+            {/* Message area fills the rest - full width */}
+            <div className="mt-2 px-4 pb-4 flex-1 flex flex-col">
+              <form onSubmit={(e) => { e.preventDefault(); try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; if (msg.trim()) { s?.emit('sync', { type: 'chat', text: msg.trim() }); setMsg(''); } } catch {} }} className="mt-auto flex items-center gap-2 w-full">
+                <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message..." className="flex-1 min-h-[44px] px-3 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" />
+                <button type="submit" className="h-11 px-4 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20">Send</button>
               </form>
             </div>
           </div>
-
-          {/* Call-only sidebar: no playlist/directory UI */}
         </div>
       </div>
 

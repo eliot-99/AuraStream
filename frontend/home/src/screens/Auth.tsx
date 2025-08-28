@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import RippleGrid from '../components/background/RippleGrid';
 import StarBorder from '../components/ui/StarBorder';
 import TextPressure from '../components/ui/TextPressure';
+import PasswordField from '../components/ui/PasswordField';
 
 export default function Auth() {
   const [mode, setMode] = useState<'login'|'signup'>('login');
@@ -189,7 +190,7 @@ export default function Auth() {
             )}
             <label className="text-sm text-white/80">
               Password
-              <input value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} required aria-label="Password" type="password" placeholder="Enter password" className="mt-1 w-full px-3 py-3 rounded-xl bg-white/10 border border-white/20 outline-none focus:ring-2 focus:ring-cyan-400 placeholder-white/40" />
+              <PasswordField value={form.password} onChange={e => setForm(p => ({ ...p, password: e.target.value }))} required ariaLabel="Password" placeholder="Enter password" />
             </label>
 
             {mode === 'signup' && (
