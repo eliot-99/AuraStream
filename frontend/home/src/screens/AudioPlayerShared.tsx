@@ -202,6 +202,26 @@ export default function AudioPlayer({ onBack, src, name }: Props) {
   const [showTuning, setShowTuning] = useState(false); // removed from UI
   const [showDrawer, setShowDrawer] = useState(false);
 
+  // Call/avatars + mic metering (mirror Video sidebar)
+  const [myAvatar, setMyAvatar] = useState<string | null>(null);
+  const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
+  const [myName, setMyName] = useState<string>('Me');
+  const [peerName, setPeerName] = useState<string>('Peer');
+  const [camOn, setCamOn] = useState(false);
+  const [micUiMuted, setMicUiMuted] = useState(false);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const myVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const micAudioCtxRef = useRef<AudioContext | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micRafRef = useRef<number>();
+  const [myLevel, setMyLevel] = useState(0);
+  const [peerLevel, setPeerLevel] = useState(0);
+  const lastVuSentRef = useRef<number>(0);
+  const meActive = useMemo(() => myLevel > 0.04 && myLevel > peerLevel + 0.02, [myLevel, peerLevel]);
+  const peerActive = useMemo(() => peerLevel > 0.04 && peerLevel > myLevel + 0.02, [myLevel, peerLevel]);
+
   const objectUrlsRef = useRef<string[]>([]);
 
   // Initialize with a single track if provided
@@ -529,23 +549,207 @@ export default function AudioPlayer({ onBack, src, name }: Props) {
   // Attach socket for control sync
   useEffect(() => {
     try {
+      // Load session avatars/names
+      const room = sessionStorage.getItem('room') || 'demo';
+      try {
+        const me = sessionStorage.getItem(`room:${room}:myAvatar`);
+        const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
+        const myN = sessionStorage.getItem(`room:${room}:myName`);
+        const peerN = sessionStorage.getItem(`room:${room}:peerName`);
+        if (me) setMyAvatar(me);
+        if (peer) setPeerAvatar(peer);
+        if (myN) setMyName(myN);
+        if (peerN) setPeerName(peerN);
+      } catch {}
+
       const { io } = require('socket.io-client');
       const s = io('/', { transports: ['websocket'] });
       ;(window as any).sharedSocket = s;
-      const room = sessionStorage.getItem('room') || 'demo';
       s.on('connect', () => {
         s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
       });
       s.on('control', (payload: any) => {
         if (payload?.type === 'state') {
-          if (typeof payload.micMuted === 'boolean') setMuted(payload.micMuted);
+          if (typeof payload.micMuted === 'boolean') { setMicUiMuted(payload.micMuted); setMuted(payload.micMuted); }
+          if (typeof payload.camOn === 'boolean') setCamOn(payload.camOn);
         }
+      });
+      // Receive chat + peer VU like video sidebar
+      s.on('sync', (payload: any) => {
+        try {
+          if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
+            (window as any).__sharedChat = [
+              ...((window as any).__sharedChat || []),
+              { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
+            ];
+            const box = document.getElementById('chatScroll');
+            if (box) box.scrollTop = box.scrollHeight;
+          } else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+            setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+          }
+        } catch {}
       });
       return () => { try { s.disconnect(); } catch {} };
     } catch {}
   }, []);
 
+  // Ensure video element receives stream once rendered
+  useEffect(() => {
+    try {
+      const v = myVideoRef.current;
+      const s = localStreamRef.current;
+      if (camOn && v && s) {
+        if (v.srcObject !== s) v.srcObject = s as any;
+        v.muted = true;
+        v.playsInline = true as any;
+        const p = v.play?.();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch {}
+  }, [camOn]);
+
+  // Camera toggle (for parity with video sidebar)
+  const toggleCam = async () => {
+    try {
+      if (!camOn) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: 'user' }, audio: !micUiMuted });
+        localStreamRef.current = stream;
+        // Attach to video element so camera shows instead of avatar
+        try { if (myVideoRef.current) { myVideoRef.current.srcObject = stream; myVideoRef.current.muted = true; myVideoRef.current.playsInline = true as any; myVideoRef.current.play?.().catch(()=>{});} } catch {}
+        setCamOn(true);
+
+        // If mic isn't muted, start local VU meter (so the glow shows up)
+        if (!micUiMuted) {
+          const ctx = micAudioCtxRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+          micAudioCtxRef.current = ctx;
+          try { micSourceRef.current?.disconnect(); } catch {}
+          micSourceRef.current = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          micAnalyserRef.current = analyser;
+          micSourceRef.current.connect(analyser);
+          const data = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            analyser.getByteTimeDomainData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+            const rms = Math.sqrt(sum / data.length);
+            const smooth = Math.max(0, Math.min(1, rms * 1.6));
+            setMyLevel(prev => prev * 0.6 + smooth * 0.4);
+            const now = performance.now();
+            if (now - (lastVuSentRef.current || 0) > 120) {
+              lastVuSentRef.current = now;
+              try { (window as any).sharedSocket?.emit('sync', { type: 'vu', level: Number((smooth).toFixed(3)) }); } catch {}
+            }
+            micRafRef.current = requestAnimationFrame(tick);
+          };
+          if (!micRafRef.current) micRafRef.current = requestAnimationFrame(tick);
+        }
+      } else {
+        const s = localStreamRef.current;
+        s?.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
+        // Clear video element
+        try { if (myVideoRef.current) { myVideoRef.current.pause?.(); myVideoRef.current.srcObject = null as any; } } catch {}
+        setCamOn(false);
+        // Stop meter when turning camera off (if no stream remains)
+        if (micRafRef.current) cancelAnimationFrame(micRafRef.current);
+        micRafRef.current = undefined;
+        try { micSourceRef.current?.disconnect(); } catch {}
+        micSourceRef.current = null;
+        setMyLevel(0);
+      }
+      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn: !camOn, micMuted: micUiMuted }); } catch {}
+    } catch {}
+  };
+
+  // Mic toggle with local VU metering and sync to peer
+  const toggleMic = async () => {
+    try {
+      const nextMuted = !micUiMuted;
+      const s = localStreamRef.current;
+      if (s) {
+        let aud = s.getAudioTracks();
+        if (!aud.length && !nextMuted) {
+          const a = await navigator.mediaDevices.getUserMedia({ audio: true });
+          a.getAudioTracks().forEach(tr => s.addTrack(tr));
+          aud = s.getAudioTracks();
+        }
+        aud.forEach(tr => tr.enabled = !nextMuted);
+      } else if (!nextMuted) {
+        const a = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStreamRef.current = a;
+      }
+
+      // Meter setup/teardown for glow animation
+      if (!nextMuted) {
+        // Turn on meter
+        const ctx = micAudioCtxRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+        micAudioCtxRef.current = ctx;
+        const s2 = localStreamRef.current;
+        if (s2) {
+          try { micSourceRef.current?.disconnect(); } catch {}
+          micSourceRef.current = ctx.createMediaStreamSource(s2);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          micAnalyserRef.current = analyser;
+          micSourceRef.current.connect(analyser);
+          const data = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            analyser.getByteTimeDomainData(data);
+            // Compute RMS (0..1)
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+              const v = (data[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / data.length);
+            const smooth = Math.max(0, Math.min(1, rms * 1.6));
+            setMyLevel(prev => prev * 0.6 + smooth * 0.4);
+
+            // Throttle sending level to peers (every ~120ms)
+            const now = performance.now();
+            if (now - (lastVuSentRef.current || 0) > 120) {
+              lastVuSentRef.current = now;
+              try { (window as any).sharedSocket?.emit('sync', { type: 'vu', level: Number((smooth).toFixed(3)) }); } catch {}
+            }
+
+            micRafRef.current = requestAnimationFrame(tick);
+          };
+          if (!micRafRef.current) micRafRef.current = requestAnimationFrame(tick);
+        }
+      } else {
+        // Turn off meter
+        if (micRafRef.current) cancelAnimationFrame(micRafRef.current);
+        micRafRef.current = undefined;
+        try { micSourceRef.current?.disconnect(); } catch {}
+        micSourceRef.current = null;
+        setMyLevel(0);
+      }
+
+      setMicUiMuted(nextMuted);
+      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn, micMuted: nextMuted }); } catch {}
+    } catch {}
+  };
+
   const [msg, setMsg] = useState('');
+  const [showEmoji, setShowEmoji] = useState(false);
+  const msgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const insertEmoji = (emoji: string) => {
+    const el = msgInputRef.current;
+    if (!el) { setMsg(prev => prev + emoji); setShowEmoji(false); return; }
+    const start = el.selectionStart ?? msg.length;
+    const end = el.selectionEnd ?? msg.length;
+    const next = msg.slice(0, start) + emoji + msg.slice(end);
+    setMsg(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + emoji.length;
+      try { el.setSelectionRange(pos, pos); } catch {}
+    });
+    setShowEmoji(false);
+  };
 
   return (
     <div className="relative min-h-screen w-full font-montserrat text-white">
@@ -654,48 +858,98 @@ export default function AudioPlayer({ onBack, src, name }: Props) {
             </button>
           </div>
         </div>
-        <div className="overflow-y-auto max-h-[calc(100%-52px)] p-2 space-y-3">
-          {/* Calling controls (from SharedRoom) */}
-          <div className="rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 p-3 text-white">
-            {/* Avatars column with glow */}
-            <div className="flex flex-col items-center gap-4">
-              <div className="relative">
-                <div className="absolute inset-[-6px] rounded-full blur-[10px]" style={{ boxShadow: '0 0 24px rgba(59,130,246,0.45), 0 0 36px rgba(16,185,129,0.35)' }} />
-                <div className="w-16 h-16 rounded-full bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center">
-                  {/* Swap for session avatars if needed */}
-                  <span>🧑</span>
+        <div className="flex flex-col h-[calc(100%-52px)]">
+          {/* TOP: scrollable content (controls) */}
+          <div className="flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2">
+            <div className="text-white">
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative w-[88%] mx-auto">
+                  <div className="w-full h-[140px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
+                       style={{ boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }}>
+                    {camOn ? (
+                      <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
+                    ) : (
+                      myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span>🧑</span>
+                    )}
+                  </div>
+                  <div className="mt-2 text-white/80 text-sm text-center truncate">{myName}</div>
+                </div>
+                <div className="relative w-[88%] mx-auto">
+                  <div className="w-full h-[140px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
+                       style={{ boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }}>
+                    {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span>👤</span>}
+                  </div>
+                  <div className="mt-2 text-white/80 text-sm text-center truncate">{peerName}</div>
+                </div>
+                <div className="mt-2 flex items-center justify-center gap-3">
+                  <button onClick={toggleCam} title="Open Video" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
+                  </button>
+                  <button onClick={toggleMic} title="Open Audio" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+                  </button>
                 </div>
               </div>
-              <div className="relative">
-                <div className="absolute inset-[-6px] rounded-full blur-[10px]" style={{ boxShadow: '0 0 24px rgba(236,72,153,0.45), 0 0 36px rgba(168,85,247,0.35)' }} />
-                <div className="w-16 h-16 rounded-full bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center">
-                  <span>👤</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Buttons: Open Video / Open Audio */}
-            <div className="mt-4 flex items-center justify-center gap-3">
-              <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-cam' }); } catch {} }}
-                title="Open Video" className="h-10 w-10 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
-              </button>
-              <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-mic' }); } catch {} }}
-                title="Open Audio" className="h-10 w-10 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-              </button>
-            </div>
-
-            {/* Message box */}
-            <div className="mt-4">
-              <form onSubmit={(e) => { e.preventDefault(); try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; if (msg.trim()) { s?.emit('sync', { type: 'chat', text: msg.trim() }); setMsg(''); } } catch {} }} className="flex items-center gap-2">
-                <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message..." className="flex-1 px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" />
-                <button type="submit" className="h-9 px-3 rounded-lg bg-white/10 border border-white/20 hover:bg-white/20">Send</button>
-              </form>
             </div>
           </div>
 
-          {/* Call-only sidebar: no playlist/directory UI */}
+          {/* BOTTOM: chat panel (fixed to bottom, half height) */}
+          <div className="h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col">
+            {/* Scroll area for messages */}
+            <div id="chatScroll" className="flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10">
+              {(window as any).__sharedChat?.length ? (window as any).__sharedChat.map((m: any) => (
+                <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`}>
+                    <div className="whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm">{m.text}</div>
+                    <div className="mt-0.5 text-[10px] text-white/60 text-right">{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                  </div>
+                </div>
+              )) : (
+                <div className="text-xs text-white/60 text-center py-4">No messages yet. Say hello!</div>
+              )}
+            </div>
+            {/* Composer */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                try {
+                  const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined;
+                  const text = msg.trim();
+                  if (!text) return;
+                  (window as any).__sharedChat = [
+                    ...((window as any).__sharedChat || []),
+                    { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: true, text, ts: Date.now() }
+                  ];
+                  s?.emit('sync', { type: 'chat', text });
+                  setMsg('');
+                  const box = document.getElementById('chatScroll');
+                  if (box) box.scrollTop = box.scrollHeight;
+                } catch {}
+              }}
+              className="mt-2 pb-2 flex items-center gap-2"
+            >
+              <div className="relative flex-1">
+                <input
+                  ref={msgInputRef}
+                  value={msg}
+                  onChange={(e) => setMsg(e.target.value)}
+                  placeholder="Write a message…"
+                  className="w-full pr-10 px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none focus:ring-2 focus:ring-cyan-400/60"
+                />
+                <button type="button" onClick={() => setShowEmoji(v=>!v)} title="Emoji" className="absolute right-2 top-1/2 -translate-y-1/2 text-white/80 hover:text-white">😊</button>
+                {showEmoji && (
+                  <div className="absolute right-0 bottom-[110%] z-10 w-56 rounded-xl bg-white/10 backdrop-blur-md border border-white/20 p-2 shadow-xl">
+                    <div className="grid grid-cols-8 gap-1 text-lg">
+                      {['😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🤗','🤔','😴','😇','🥳','👍','🙏','🔥','✨','🎉','💙','💜','💡','🎵','🎬','🕹️','⚡','🌟','🌈','☕','🍿'].map(e => (
+                        <button key={e} type="button" className="hover:scale-110 transition" onClick={() => insertEmoji(e)}>{e}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button type="submit" className="h-9 px-3 rounded-xl bg-white/10 border border-white/20 hover:bg-white/15">Send</button>
+            </form>
+          </div>
         </div>
       </div>
 
