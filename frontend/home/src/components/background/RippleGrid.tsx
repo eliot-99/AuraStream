@@ -54,12 +54,13 @@ const RippleGrid: React.FC<Props> = ({
       dpr: Math.min(window.devicePixelRatio, 2),
       alpha: true,
     });
-    const gl = renderer.gl as WebGLRenderingContext;
+    const gl = renderer.gl as WebGLRenderingContext & { canvas: HTMLCanvasElement };
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.canvas.style.width = "100%";
-    gl.canvas.style.height = "100%";
-    containerRef.current.appendChild(gl.canvas);
+    // Ensure canvas is typed as HTMLCanvasElement for style/DOM ops
+    (gl.canvas as HTMLCanvasElement).style.width = "100%";
+    (gl.canvas as HTMLCanvasElement).style.height = "100%";
+    containerRef.current.appendChild(gl.canvas as unknown as Node);
 
     const vert = `
 attribute vec2 position;
@@ -166,9 +167,9 @@ void main() {
     };
     uniformsRef.current = uniforms;
 
-    const geometry = new Triangle(gl);
-    const program = new Program(gl, { vertex: vert, fragment: frag, uniforms });
-    const mesh = new Mesh(gl, { geometry, program });
+    const geometry = new Triangle(renderer.gl as any);
+    const program = new Program(renderer.gl as any, { vertex: vert, fragment: frag, uniforms });
+    const mesh = new Mesh(renderer.gl as any, { geometry, program });
 
     const resize = () => {
       const { clientWidth: w, clientHeight: h } = containerRef.current!;
@@ -216,8 +217,10 @@ void main() {
         containerRef.current.removeEventListener("mouseenter", handleMouseEnter);
         containerRef.current.removeEventListener("mouseleave", handleMouseLeave);
       }
-      renderer.gl.getExtension("WEBGL_lose_context")?.loseContext();
-      containerRef.current?.removeChild(gl.canvas);
+      (renderer.gl as any).getExtension("WEBGL_lose_context")?.loseContext?.();
+      if (containerRef.current && (gl.canvas as any)?.parentNode === containerRef.current) {
+        containerRef.current.removeChild(gl.canvas as unknown as Node);
+      }
     };
   }, []);
 

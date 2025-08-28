@@ -6,7 +6,18 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 export default defineConfig({
   plugins: [react(), wasm(), topLevelAwait()],
   server: {
+    host: true, // listen on all interfaces for external access
+    port: 5173,
+    strictPort: true,
     https: false, // In real deployment, serve via HTTPS/WSS at the proxy/CDN level
+    cors: true,
+    // Stabilize HMR/WebSocket when accessed via public IP/port forwarding
+    hmr: {
+      protocol: 'ws',
+      host: process.env.VITE_PUBLIC_HOST || undefined, // set to your PUBLIC_IP or domain for remote clients
+      port: 5173,
+      clientPort: 5173,
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8080',

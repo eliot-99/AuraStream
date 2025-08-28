@@ -72,11 +72,19 @@ export default function Auth() {
   };
 
   // Forgot Password actions
+  const [fpUser, setFpUser] = useState('');
+  const [fpOtp, setFpOtp] = useState('');
+  const [fpToken, setFpToken] = useState('');
+  const [fpNewPw, setFpNewPw] = useState('');
+  const [fpStep, setFpStep] = useState<'idle'|'otp-sent'|'verified'>('idle');
+  const [fpHint, setFpHint] = useState('');
+
   const startForgot = async () => {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/users/forgot/start', {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      const res = await fetch(`${API_BASE}/api/users/forgot/start`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ usernameOrEmail: fpUser })
       });
@@ -95,7 +103,8 @@ export default function Auth() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/users/forgot/verify', {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      const res = await fetch(`${API_BASE}/api/users/forgot/verify`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ usernameOrEmail: fpUser, otp: fpOtp })
       });
@@ -114,7 +123,8 @@ export default function Auth() {
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch('/api/users/forgot/reset', {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      const res = await fetch(`${API_BASE}/api/users/forgot/reset`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resetToken: fpToken, newPassword: fpNewPw })
       });

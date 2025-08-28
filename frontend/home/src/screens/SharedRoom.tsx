@@ -61,7 +61,8 @@ export default function SharedRoom() {
   }, [room]);
 
   useEffect(() => {
-    const socket = io('/', { transports: ['websocket'] });
+    const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -115,11 +116,16 @@ export default function SharedRoom() {
   }, [room]);
 
   useEffect(() => { (async () => {
-    try { const r = await fetch('/api/webrtc/config'); if (r.ok) { const j = await r.json(); if (j?.iceServers) setIceServers(j.iceServers); } } catch {}
+    try {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      const r = await fetch(`${API_BASE}/api/webrtc/config`);
+      if (r.ok) { const j = await r.json(); if (j?.iceServers) setIceServers(j.iceServers); }
+    } catch {}
     try {
       const token = localStorage.getItem('auth');
       if (token) {
-        const me = await fetch('/api/users/me', { headers: { Authorization: `Bearer ${token}` } });
+        const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+        const me = await fetch(`${API_BASE}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } });
         if (!me.ok) throw new Error('unauth');
         const mj = await me.json();
         if (mj?.ok) {

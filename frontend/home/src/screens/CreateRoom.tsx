@@ -39,7 +39,7 @@ async function deriveVerifier(room: string, password: string): Promise<string> {
     ['deriveBits']
   );
   const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: new Uint8Array(salt), iterations: 200000, hash: 'SHA-256' },
     baseKey,
     256
   );

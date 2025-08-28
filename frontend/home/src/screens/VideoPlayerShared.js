@@ -1,0 +1,498 @@
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+// Icons (simple inline SVGs)
+const Icon = {
+    Back: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M15 18l-6-6 6-6v12z" }) })),
+    Shield: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M12 2l8 4v6c0 5-3.8 9.74-8 10-4.2-.26-8-5-8-10V6l8-4z" }) })),
+    Play: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M8 5v14l11-7z" }) })),
+    Pause: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M6 5h4v14H6zM14 5h4v14h-4z" }) })),
+    Next: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" }) })),
+    Prev: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M18 6l-8.5 6L18 18V6zM6 6h2v12H6z" }) })),
+    SkipFwd: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M5 6l7 6-7 6V6zm8 0h2v12h-2z" }) })),
+    SkipBack: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M19 18l-7-6 7-6v12zM9 6H7v12h2z" }) })),
+    CC: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M21 5H3a2 2 0 00-2 2v10a2 2 0 002 2h18a2 2 0 002-2V7a2 2 0 00-2-2zm-9 9H8a1 1 0 010-2h4v-2H8a3 3 0 100 6h4v-2zm8 0h-4a1 1 0 010-2h4v-2h-4a3 3 0 100 6h4v-2z" }) })),
+    Expand: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M7 14H5v5h5v-2H7v-3zm0-4h3V7h3V5H7v5zm10 9h-3v2h5v-5h-2v3zm2-14h-5v2h3v3h2V5z" }) })),
+    Pip: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M3 5h18v14H3V5zm10 6H5v6h8v-6z" }) })),
+    Globe: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M12 2a10 10 0 100 20 10 10 0 000-20zm6.93 8H16.5a15.7 15.7 0 00-1.2-4.23A8.03 8.03 0 0118.93 10zM12 4c.9 1.13 1.64 3.1 1.97 6H10.03C10.36 7.1 11.1 5.13 12 4zM7.7 5.77A15.7 15.7 0 006.5 10H5.07A8.03 8.03 0 017.7 5.77zM5.07 14H6.5c.2 1.53.64 3 1.2 4.23A8.03 8.03 0 015.07 14zM12 20c-.9-1.13-1.64-3.1-1.97-6h3.94C13.64 16.9 12.9 18.87 12 20zm4.3-1.77A15.7 15.7 0 0017.5 14h1.43a8.03 8.03 0 01-2.63 4.23zM6.5 12c0-.68.03-1.35.1-2h10.8c.07.65.1 1.32.1 2s-.03 1.35-.1 2H6.6c-.07-.65-.1-1.32-.1-2z" }) })),
+    Audio: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M12 3a5 5 0 00-5 5v3a5 5 0 009.9 1H18a3 3 0 01-6 0V8a3 3 0 016 0v1h2V8a5 5 0 00-5-5zM5 14h2a5 5 0 0010 0h2a7 7 0 01-14 0z" }) })),
+    Volume: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M3 10v4h4l5 5V5L7 10H3zm13.5 2a4.5 4.5 0 00-3.5-4.39v8.78A4.5 4.5 0 0016.5 12z" }) })),
+    Mute: (p) => (_jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", ...p, children: _jsx("path", { d: "M16.5 12a4.5 4.5 0 01-4.5 4.5v-9A4.5 4.5 0 0116.5 12zM3 10v4h4l5 5V5L7 10H3zm14.59 7L21 20.41 19.59 21 3 4.41 4.41 3 17.59 16z" }) })),
+};
+// Minimal AES-GCM decryptor for ArrayBuffer/Uint8Array
+async function decryptAesGcm(cipher, key, iv) {
+    const srcAb = cipher instanceof Uint8Array
+        ? (() => { const ab = new ArrayBuffer(cipher.byteLength); new Uint8Array(ab).set(cipher); return ab; })()
+        : cipher;
+    const ivAb = (() => { const ab = new ArrayBuffer(iv.byteLength); new Uint8Array(ab).set(iv); return ab; })();
+    const out = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivAb }, key, srcAb);
+    return out;
+}
+function formatTime(t) {
+    if (!isFinite(t) || t < 0)
+        return '0:00';
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+export default function VideoPlayer({ onBack, src }) {
+    const videoRef = useRef(null);
+    const [playing, setPlaying] = useState(false);
+    const [progress, setProgress] = useState({ cur: 0, dur: 0 });
+    const [volume, setVolume] = useState(1);
+    const [muted, setMuted] = useState(false);
+    const [isFS, setIsFS] = useState(false);
+    const [pip, setPip] = useState(false);
+    const [bgColor, setBgColor] = useState('#0f1320');
+    const [colors, setColors] = useState(['#00ffff', '#ff00ff']);
+    const [subsEnabled, setSubsEnabled] = useState(true);
+    const [availableSubs, setAvailableSubs] = useState([]);
+    const [selectedSub, setSelectedSub] = useState('');
+    const [availableAudio, setAvailableAudio] = useState([]);
+    const [selectedAudio, setSelectedAudio] = useState('');
+    // Ambient background (decoy) video ref
+    const decoyRef = useRef(null);
+    const audioCtxRef = useRef(null);
+    const analyserRef = useRef(null);
+    const sourceRef = useRef(null);
+    const rafRef = useRef();
+    const [showSubMenu, setShowSubMenu] = useState(false);
+    const [showAudioMenu, setShowAudioMenu] = useState(false);
+    const colorTimer = useRef(null);
+    const [showDrawer, setShowDrawer] = useState(false);
+    const [playlist, setPlaylist] = useState([]);
+    const objectUrlsRef = useRef([]);
+    const [msg, setMsg] = useState('');
+    // Avatars from SharedRoom (if available) + UI call toggles
+    const [myAvatar, setMyAvatar] = useState(null);
+    const [peerAvatar, setPeerAvatar] = useState(null);
+    const [camOn, setCamOn] = useState(false);
+    const [micUiMuted, setMicUiMuted] = useState(false);
+    useEffect(() => {
+        try {
+            const room = sessionStorage.getItem('room') || 'demo';
+            const me = sessionStorage.getItem(`room:${room}:myAvatar`);
+            const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
+            if (me)
+                setMyAvatar(me);
+            if (peer)
+                setPeerAvatar(peer);
+        }
+        catch { }
+        // Join socket room for control sync
+        try {
+            const { io } = require('socket.io-client');
+            const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+            const s = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
+            ;
+            window.sharedSocket = s;
+            s.on('connect', () => {
+                const r = sessionStorage.getItem('room') || 'demo';
+                s.emit('handshake', { room: r, name: sessionStorage.getItem(`room:${r}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${r}:myAvatar`) || undefined });
+            });
+            s.on('control', (payload) => {
+                if (payload?.type === 'state') {
+                    if (typeof payload.micMuted === 'boolean')
+                        setMicUiMuted(payload.micMuted);
+                    if (typeof payload.camOn === 'boolean')
+                        setCamOn(payload.camOn);
+                }
+            });
+            return () => { try {
+                s.disconnect();
+            }
+            catch { } };
+        }
+        catch { }
+    }, []);
+    // Dynamic sizing based on video aspect ratio
+    const [aspect, setAspect] = useState(16 / 9); // default guess
+    const [box, setBox] = useState({ w: 0, h: 0 });
+    // Recompute container size for current aspect and viewport
+    useEffect(() => {
+        const calc = () => {
+            const isWide16x9 = aspect > 1.72 && aspect < 1.82; // near 16:9
+            const wmax = Math.floor(window.innerWidth * 0.92); // match controls width
+            const h = Math.floor(window.innerHeight * 0.74); // keep height fixed
+            let w = isWide16x9 ? wmax : Math.round(h * aspect); // for 16:9 fill width, others derive from height
+            if (w > wmax)
+                w = wmax; // clamp to viewport padding
+            setBox({ w, h });
+        };
+        calc();
+        window.addEventListener('resize', calc);
+        return () => window.removeEventListener('resize', calc);
+    }, [aspect]);
+    // Color sync from canvas every 2s (still used for glow color)
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const update = () => {
+            if (!v.videoWidth || !v.videoHeight || !ctx)
+                return;
+            canvas.width = 64;
+            canvas.height = Math.max(1, Math.floor(64 * (v.videoHeight / v.videoWidth)));
+            ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            let r = 0, g = 0, b = 0, n = canvas.width * canvas.height;
+            for (let i = 0; i < data.length; i += 4) {
+                r += data[i];
+                g += data[i + 1];
+                b += data[i + 2];
+            }
+            r = Math.floor(r / n);
+            g = Math.floor(g / n);
+            b = Math.floor(b / n);
+            const col = `rgb(${r}, ${g}, ${b})`;
+            setBgColor(col);
+        };
+        update();
+        colorTimer.current = window.setInterval(update, 2000);
+        return () => { if (colorTimer.current)
+            window.clearInterval(colorTimer.current); };
+    }, []);
+    // Progress
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const onTime = () => setProgress({ cur: v.currentTime || 0, dur: v.duration || 0 });
+        const onLoaded = () => setProgress({ cur: v.currentTime || 0, dur: v.duration || 0 });
+        v.addEventListener('timeupdate', onTime);
+        v.addEventListener('loadedmetadata', onLoaded);
+        v.addEventListener('ended', () => setPlaying(false));
+        return () => { v.removeEventListener('timeupdate', onTime); v.removeEventListener('loadedmetadata', onLoaded); };
+    }, []);
+    const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
+    // Controls
+    const togglePlay = async () => {
+        const v = videoRef.current;
+        try {
+            if (v.paused) {
+                await v.play();
+                setPlaying(true);
+            }
+            else {
+                v.pause();
+                setPlaying(false);
+            }
+        }
+        catch { }
+    };
+    const setSourceAndPlay = async (url) => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        try {
+            v.pause();
+            v.src = url;
+            // mirror source to decoy
+            if (decoyRef.current) {
+                try {
+                    decoyRef.current.pause();
+                }
+                catch { }
+                decoyRef.current.src = url;
+                try {
+                    await decoyRef.current.load?.();
+                }
+                catch { }
+            }
+            await v.load();
+            await v.play();
+            setPlaying(true);
+        }
+        catch {
+            setPlaying(false);
+        }
+    };
+    const handleSeek = (t) => { const v = videoRef.current; if (!v)
+        return; v.currentTime = Math.max(0, Math.min(v.duration || t, t)); };
+    const handleSkip = (d) => { const v = videoRef.current; if (!v)
+        return; handleSeek((v.currentTime || 0) + d); };
+    const enterFS = async () => { const el = videoRef.current; try {
+        await el?.requestFullscreen?.();
+        setIsFS(true);
+    }
+    catch { } };
+    const exitFS = async () => { try {
+        await document.exitFullscreen();
+        setIsFS(false);
+    }
+    catch { } };
+    const toggleFS = () => (document.fullscreenElement ? exitFS() : enterFS());
+    // Subtitle toggling and track switching
+    const refreshTracksState = () => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const subs = [];
+        Array.from(v.textTracks).forEach((tt) => {
+            const label = tt.label || tt.language || 'Subtitles';
+            const srclang = (tt.language || 'und').toLowerCase();
+            subs.push({ label, srclang });
+        });
+        setAvailableSubs(subs);
+        if (!selectedSub && subs.length)
+            setSelectedSub(subs[0].srclang);
+        // Audio tracks (may not be supported in all browsers)
+        const anyV = v;
+        const audioTracks = anyV.audioTracks ? Array.from(anyV.audioTracks) : [];
+        const auds = audioTracks.map((a, i) => ({ label: a.label || a.language || `Track ${i + 1}`, lang: a.language }));
+        setAvailableAudio(auds);
+        if (!selectedAudio && auds.length)
+            setSelectedAudio(auds[0].lang || '');
+    };
+    const setSubTrack = (lang) => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        Array.from(v.textTracks).forEach((tt) => { tt.mode = (tt.language?.toLowerCase() === lang.toLowerCase()) ? 'showing' : 'disabled'; });
+        setSelectedSub(lang);
+    };
+    const toggleSubtitles = () => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const next = !subsEnabled;
+        setSubsEnabled(next);
+        Array.from(v.textTracks).forEach((tt) => { tt.mode = next ? (tt.mode === 'disabled' ? 'showing' : tt.mode) : 'disabled'; });
+    };
+    const setAudioTrack = (lang) => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        if (!v.audioTracks) {
+            setSelectedAudio(lang || '');
+            return;
+        }
+        const tracks = Array.from(v.audioTracks);
+        tracks.forEach((t) => t.enabled = (t.language === lang) || (!lang && t === tracks[0]));
+        setSelectedAudio(lang || '');
+    };
+    // Load provided src (object URL or remote) if passed
+    useEffect(() => {
+        if (src)
+            setSourceAndPlay(src);
+    }, [src]);
+    // Smooth playback hints + track state wiring + strong decoy sync
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const decoy = decoyRef.current;
+        v.playsInline = true;
+        v.preload = 'auto';
+        v.disablePictureInPicture = true;
+        v.controls = false;
+        v.autoplay = false;
+        v.style.willChange = 'transform, opacity';
+        v.style.transform = 'translateZ(0)';
+        const onLoadedMeta = () => {
+            refreshTracksState();
+            if (v.videoWidth && v.videoHeight)
+                setAspect(v.videoWidth / v.videoHeight);
+            if (subsEnabled && v.textTracks && v.textTracks.length) {
+                Array.from(v.textTracks).forEach((tt, i) => tt.mode = i === 0 ? 'showing' : 'disabled');
+            }
+            // align decoy timing and playbackRate on metadata ready
+            if (decoy) {
+                try {
+                    decoy.playbackRate = v.playbackRate;
+                }
+                catch { }
+                try {
+                    if (!Number.isNaN(v.currentTime))
+                        decoy.currentTime = v.currentTime;
+                }
+                catch { }
+            }
+        };
+        const onPlay = () => {
+            if (!decoy)
+                return;
+            try {
+                decoy.playbackRate = v.playbackRate;
+            }
+            catch { }
+            try {
+                if (Math.abs((decoy.currentTime || 0) - (v.currentTime || 0)) > 0.15)
+                    decoy.currentTime = v.currentTime;
+            }
+            catch { }
+            try {
+                decoy.play();
+            }
+            catch { }
+        };
+        const onPause = () => { try {
+            decoy?.pause();
+        }
+        catch { } };
+        const onSeeked = () => {
+            if (!decoy)
+                return;
+            try {
+                decoy.currentTime = v.currentTime;
+            }
+            catch { }
+        };
+        const onRateChange = () => { if (decoy) {
+            try {
+                decoy.playbackRate = v.playbackRate;
+            }
+            catch { }
+        } };
+        const onEnded = () => { try {
+            decoy?.pause();
+        }
+        catch { } };
+        v.addEventListener('loadedmetadata', onLoadedMeta);
+        v.addEventListener('play', onPlay);
+        v.addEventListener('pause', onPause);
+        v.addEventListener('seeked', onSeeked);
+        v.addEventListener('ratechange', onRateChange);
+        v.addEventListener('ended', onEnded);
+        return () => {
+            v.removeEventListener('loadedmetadata', onLoadedMeta);
+            v.removeEventListener('play', onPlay);
+            v.removeEventListener('pause', onPause);
+            v.removeEventListener('seeked', onSeeked);
+            v.removeEventListener('ratechange', onRateChange);
+            v.removeEventListener('ended', onEnded);
+        };
+    }, [subsEnabled]);
+    // Fallback picker using a hidden input appended to the DOM (works across browsers)
+    const pickFilesFromInput = async () => {
+        return new Promise((resolve) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.accept = 'video/*';
+            input.webkitdirectory = true; // Chromium/WebKit
+            input.setAttribute('webkitdirectory', '');
+            input.setAttribute('directory', '');
+            input.setAttribute('mozdirectory', '');
+            // Hide from layout but keep in DOM for click to be honored
+            input.style.position = 'fixed';
+            input.style.left = '-9999px';
+            document.body.appendChild(input);
+            input.onchange = () => {
+                const files = Array.from(input.files || []);
+                input.remove();
+                resolve(files);
+            };
+            input.click();
+        });
+    };
+    const handleSelectDirectory = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+            const btn = e.currentTarget;
+            btn.classList.add('ring-2', 'ring-blue-400', 'scale-95');
+            setTimeout(() => btn.classList.remove('ring-2', 'ring-blue-400', 'scale-95'), 220);
+        }
+        catch { }
+        const loaded = [];
+        // Try native directory picker first; fall back to hidden input if unavailable or fails
+        try {
+            if ('showDirectoryPicker' in window) {
+                // @ts-ignore - experimental API
+                const dirHandle = await window.showDirectoryPicker();
+                // @ts-ignore
+                for await (const [, handle] of dirHandle.entries()) {
+                    if (handle.kind !== 'file')
+                        continue;
+                    const file = await handle.getFile();
+                    if (!file.type.startsWith('video/'))
+                        continue;
+                    const url = URL.createObjectURL(file);
+                    objectUrlsRef.current.push(url);
+                    loaded.push({ name: file.name, url });
+                }
+            }
+            else {
+                const files = await pickFilesFromInput();
+                const vids = files.filter(f => f.type.startsWith('video/'));
+                for (const f of vids) {
+                    const url = URL.createObjectURL(f);
+                    objectUrlsRef.current.push(url);
+                    loaded.push({ name: f.name, url });
+                }
+            }
+        }
+        catch {
+            // Any error with showDirectoryPicker → fallback to input
+            const files = await pickFilesFromInput();
+            const vids = files.filter(f => f.type.startsWith('video/'));
+            for (const f of vids) {
+                const url = URL.createObjectURL(f);
+                objectUrlsRef.current.push(url);
+                loaded.push({ name: f.name, url });
+            }
+        }
+        if (loaded.length) {
+            setPlaylist(loaded);
+            await setSourceAndPlay(loaded[0].url);
+        }
+    };
+    const TransportIcon = playing ? Icon.Pause : Icon.Play;
+    // Playlist navigation helpers
+    const handleNext = async () => {
+        if (!playlist.length)
+            return;
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const currentIdx = playlist.findIndex(p => p.url === v.src);
+        const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % playlist.length : 0;
+        await setSourceAndPlay(playlist[nextIdx].url);
+    };
+    const handlePrev = async () => {
+        if (!playlist.length)
+            return;
+        const v = videoRef.current;
+        if (!v)
+            return;
+        const currentIdx = playlist.findIndex(p => p.url === v.src);
+        const prevIdx = currentIdx > 0 ? currentIdx - 1 : (playlist.length - 1);
+        await setSourceAndPlay(playlist[prevIdx].url);
+    };
+    return (_jsxs("div", { className: "relative min-h-screen text-white font-montserrat overflow-hidden", children: [_jsx("video", { ref: decoyRef, className: "pointer-events-none fixed inset-0 w-full h-full object-cover filter blur-[50px] scale-[2_1.5] opacity-60 z-0", muted: true, playsInline: true, preload: "auto", "aria-hidden": "true" }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between", children: [_jsx("button", { onClick: () => { try {
+                            location.hash = '#/shared';
+                        }
+                        catch {
+                            (onBack ? onBack() : window.history.back());
+                        } }, className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", "aria-label": "Back", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: !showDrawer && (_jsx("button", { onClick: () => setShowDrawer(true), "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) })) })] }), _jsxs("main", { className: "relative z-10 min-h-screen w-full p-0", children: [_jsx("div", { className: "absolute inset-0", children: _jsx("div", { className: "absolute inset-0 flex items-center justify-center px-4 pt-6 pb-28", children: _jsx("div", { className: "relative inline-flex rounded-2xl overflow-hidden shadow-2xl max-w-[92vw]", style: { width: box.w || undefined, height: box.h || undefined, boxShadow: `0 0 40px ${bgColor.replace('rgb', 'rgba').replace(')', ', 0.35)')}` }, children: _jsx("video", { ref: videoRef, controls: false, className: `relative z-10 block w-full h-full ${aspect > 1.72 && aspect < 1.82 ? 'object-cover' : 'object-contain'} bg-black`, playsInline: true, preload: "metadata", onPlay: async () => { try {
+                                        const ctx = audioCtxRef.current;
+                                        if (ctx && ctx.state !== 'running') {
+                                            await ctx.resume();
+                                        }
+                                    }
+                                    catch { } } }) }) }) }), _jsx("div", { className: "absolute bottom-4 left-0 right-0 z-20 px-4", children: _jsxs("div", { className: "w-full max-w-[92vw] mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/40 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", style: { zIndex: 1002 }, children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: handlePrev, className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Previous", children: _jsx(Icon.Prev, { className: "w-5 h-5" }) }), _jsx("button", { onClick: () => handleSkip(-5), className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Back 5s", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: togglePlay, className: "h-12 w-12 rounded-full bg-cyan-400/30 border border-white/30 flex items-center justify-center hover:scale-110 transition", children: _jsx(TransportIcon, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Forward 5s", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) }), _jsx("button", { onClick: handleNext, className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Next", children: _jsx(Icon.Next, { className: "w-5 h-5" }) })] }), _jsx("div", { className: "flex items-center gap-3 flex-1", children: _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(59,130,246,0.95), rgba(29,78,216,0.95))', boxShadow: '0 0 18px rgba(59,130,246,0.45), 0 0 18px rgba(29,78,216,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Seek" })] }) }), _jsxs("div", { className: "flex items-center gap-3", children: [_jsx("button", { onClick: toggleFS, className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center", title: "Fullscreen", "aria-label": "Fullscreen", children: _jsx(Icon.Expand, { className: "w-4 h-4" }) }), _jsx("button", { onClick: toggleSubtitles, className: `h-9 w-9 rounded border flex items-center justify-center ${subsEnabled ? 'bg-white/20 border-white/30' : 'bg-white/10 border-white/20'}`, title: "Subtitles", "aria-label": "Subtitles", children: _jsx(Icon.CC, { className: "w-4 h-4" }) }), availableSubs.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowSubMenu((v) => !v); setShowAudioMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Subtitle Language", "aria-label": "Subtitle Language", children: _jsx(Icon.Globe, { className: "w-4 h-4" }) }), showSubMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableSubs.map(s => (_jsx("button", { onClick: () => { setSubTrack(s.srclang); setShowSubMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedSub === s.srclang ? 'bg-white/20' : 'hover:bg-white/10'}`, children: s.label }, s.srclang))) }))] })), availableAudio.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowAudioMenu((v) => !v); setShowSubMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Audio Language", "aria-label": "Audio Language", children: _jsx(Icon.Audio, { className: "w-4 h-4" }) }), showAudioMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableAudio.map((a, i) => (_jsx("button", { onClick: () => { setAudioTrack(a.lang); setShowAudioMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedAudio === (a.lang || '') ? 'bg-white/20' : 'hover:bg-white/10'}`, children: a.label }, (a.lang || '') + i))) }))] })), _jsxs("div", { className: "flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const el = videoRef.current; if (!el)
+                                                        return; el.muted = !el.muted; setMuted(el.muted); }, className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`, title: "Mute", "aria-label": "Mute", children: muted ? _jsx(Icon.Mute, { className: "w-5 h-5" }) : _jsx(Icon.Volume, { className: "w-5 h-5" }) }), _jsxs("div", { className: "relative w-[160px] h-7", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[12px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[12px] rounded-full", style: { width: `${volume * 100}%`, background: 'linear-gradient(90deg, rgba(59,130,246,1), rgba(29,78,216,1))', boxShadow: '0 0 14px rgba(59,130,246,0.55)' } }), _jsx("input", { type: "range", min: 0, max: 1, step: 0.01, value: volume, onChange: (e) => { const v = Number(e.target.value); setVolume(v); const el = videoRef.current; if (el)
+                                                                el.volume = v; }, className: "absolute inset-0 w-full appearance-none bg-transparent h-7", "aria-label": "Volume" })] })] })] })] }) }), showDrawer && createPortal(_jsxs(_Fragment, { children: [_jsx("div", { className: "fixed inset-0 z-[5000] bg-black/40", onClick: () => setShowDrawer(false) }), _jsxs("div", { className: `fixed top-0 right-0 h-full w-[80%] max-w-[360px] z-[5001] bg-black/80 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`, role: "dialog", "aria-modal": "true", onClick: (e) => e.stopPropagation(), onMouseDown: (e) => e.stopPropagation(), onTouchStart: (e) => e.stopPropagation(), style: { pointerEvents: 'auto' }, children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 border-b border-white/10", children: [_jsx("div", { className: "text-white/90 font-medium", children: "Call Controls" }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { type: "button", onClick: (e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setShowDrawer(false);
+                                                    }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center transition-transform hover:scale-105 active:scale-95 hover:bg-white/20 hover:border-white/30", title: "Close", "aria-label": "Close", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-4 h-4", children: _jsx("path", { d: "M6 6l12 12M18 6L6 18", stroke: "currentColor", strokeWidth: "2" }) }) }) })] }), _jsx("div", { className: "overflow-y-auto max-h-[calc(100%-52px)] p-0", children: _jsxs("div", { className: "flex flex-col h-full text-white", children: [_jsxs("div", { className: "px-4 pt-4 pb-2 flex flex-col items-center gap-6", children: [_jsxs("div", { className: "relative", children: [_jsx("div", { className: "absolute inset-[-10px] rounded-full blur-[16px]", style: { boxShadow: '0 0 40px rgba(59,130,246,0.5), 0 0 64px rgba(16,185,129,0.35)' } }), _jsx("div", { className: "w-20 h-20 rounded-full bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center", children: myAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: myAvatar, alt: "me" }) : _jsx("span", { className: "text-2xl", children: "\uD83E\uDDD1" }) })] }), _jsxs("div", { className: "relative", children: [_jsx("div", { className: "absolute inset-[-10px] rounded-full blur-[16px]", style: { boxShadow: '0 0 40px rgba(236,72,153,0.5), 0 0 64px rgba(168,85,247,0.35)' } }), _jsx("div", { className: "w-20 h-20 rounded-full bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center", children: peerAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: peerAvatar, alt: "peer" }) : _jsx("span", { className: "text-2xl", children: "\uD83D\uDC64" }) })] })] }), _jsxs("div", { className: "px-4 pb-2 flex items-center justify-center gap-3", children: [_jsx("button", { onClick: () => { try {
+                                                                const s = window.sharedSocket;
+                                                                s?.emit('control', { type: 'toggle-cam' });
+                                                            }
+                                                            catch { } }, title: "Open Video", className: `h-11 w-11 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: () => { try {
+                                                                const s = window.sharedSocket;
+                                                                s?.emit('control', { type: 'toggle-mic' });
+                                                            }
+                                                            catch { } }, title: "Open Audio", className: `h-11 w-11 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) })] }), _jsx("div", { className: "mt-2 px-4 pb-4 flex-1 flex flex-col", children: _jsxs("form", { onSubmit: (e) => { e.preventDefault(); try {
+                                                            const s = window.sharedSocket;
+                                                            if (msg.trim()) {
+                                                                s?.emit('sync', { type: 'chat', text: msg.trim() });
+                                                                setMsg('');
+                                                            }
+                                                        }
+                                                        catch { } }, className: "mt-auto flex items-center gap-2", children: [_jsx("input", { value: msg, onChange: (e) => setMsg(e.target.value), placeholder: "Message...", className: "flex-1 px-3 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" }), _jsx("button", { type: "submit", className: "h-11 px-4 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20", children: "Send" })] }) })] }) })] })] }), document.body)] })] }));
+}

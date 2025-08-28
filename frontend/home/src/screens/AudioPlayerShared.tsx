@@ -530,7 +530,8 @@ export default function AudioPlayer({ onBack, src, name }: Props) {
   useEffect(() => {
     try {
       const { io } = require('socket.io-client');
-      const s = io('/', { transports: ['websocket'] });
+      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+      const s = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
       ;(window as any).sharedSocket = s;
       const room = sessionStorage.getItem('room') || 'demo';
       s.on('connect', () => {

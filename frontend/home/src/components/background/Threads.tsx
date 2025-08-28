@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from "react";
-import { Renderer, Program, Mesh, Triangle, Color } from "ogl";
+import { Renderer, Program, Mesh, Triangle } from "ogl";
 import "./Threads.css";
+
+type OglColor = { r: number; g: number; b: number };
 
 interface ThreadsProps {
   color?: [number, number, number];
@@ -119,8 +121,8 @@ const Threads: React.FC<ThreadsProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const animationFrameId = useRef<number>();
-  const programRef = useRef<Program | null>(null);
-  const rendererRef = useRef<Renderer | null>(null);
+  const programRef = useRef<any | null>(null);
+  const rendererRef = useRef<any | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -140,13 +142,9 @@ const Threads: React.FC<ThreadsProps> = ({
       uniforms: {
         iTime: { value: 0 },
         iResolution: {
-          value: new Color(
-            gl.canvas.width,
-            gl.canvas.height,
-            gl.canvas.width / gl.canvas.height
-          ),
+          value: { r: gl.canvas.width, g: gl.canvas.height, b: gl.canvas.width / gl.canvas.height } as OglColor,
         },
-        uColor: { value: new Color(...color) },
+        uColor: { value: { r: color[0], g: color[1], b: color[2] } as OglColor },
         uAmplitude: { value: amplitude },
         uDistance: { value: distance },
         uMouse: { value: new Float32Array([0.5, 0.5]) },
@@ -159,9 +157,9 @@ const Threads: React.FC<ThreadsProps> = ({
     function resize() {
       const { clientWidth, clientHeight } = container;
       renderer.setSize(clientWidth, clientHeight);
-      (program.uniforms.iResolution.value as Color).r = clientWidth;
-      (program.uniforms.iResolution.value as Color).g = clientHeight;
-      (program.uniforms.iResolution.value as Color).b = clientWidth / clientHeight;
+      (program.uniforms.iResolution.value as OglColor).r = clientWidth;
+      (program.uniforms.iResolution.value as OglColor).g = clientHeight;
+      (program.uniforms.iResolution.value as OglColor).b = clientWidth / clientHeight;
     }
     window.addEventListener("resize", resize);
     resize();
@@ -224,9 +222,9 @@ const Threads: React.FC<ThreadsProps> = ({
   }, [distance]);
   useEffect(() => {
     if (!programRef.current) return;
-    (programRef.current.uniforms.uColor.value as Color).r = color[0];
-    (programRef.current.uniforms.uColor.value as Color).g = color[1];
-    (programRef.current.uniforms.uColor.value as Color).b = color[2];
+    (programRef.current.uniforms.uColor.value as OglColor).r = color[0];
+    (programRef.current.uniforms.uColor.value as OglColor).g = color[1];
+    (programRef.current.uniforms.uColor.value as OglColor).b = color[2];
   }, [color]);
 
   return <div ref={containerRef} className={`threads-container ${className || ''}`} />;

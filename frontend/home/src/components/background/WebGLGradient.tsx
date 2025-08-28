@@ -18,10 +18,10 @@ export default function WebGLGradient() {
     mount.appendChild(renderer.domElement);
 
     const geometry = new THREE.PlaneGeometry(1, 1);
-    const uniforms = {
+    const uniforms: { uTime: { value: number }; uAspect: { value: number } } = {
       uTime: { value: 0 },
       uAspect: { value: 1 }
-    } as const;
+    };
 
     const material = new THREE.ShaderMaterial({
       transparent: true,

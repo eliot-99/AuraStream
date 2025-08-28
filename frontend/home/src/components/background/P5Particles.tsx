@@ -4,10 +4,10 @@ import p5 from 'p5';
 // Interactive ripple-like particles using p5.js
 export default function P5Particles() {
   const ref = useRef<HTMLDivElement>(null);
-  const p5Ref = useRef<p5>();
+  const p5Ref = useRef<any>();
 
   useEffect(() => {
-    const sketch = (s: p5) => {
+    const sketch = (s: any) => {
       let ripples: { x: number; y: number; r: number; a: number }[] = [];
 
       s.setup = () => {

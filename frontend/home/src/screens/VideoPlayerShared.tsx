@@ -24,9 +24,14 @@ const Icon = {
   Mute: (p: any) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M16.5 12a4.5 4.5 0 01-4.5 4.5v-9A4.5 4.5 0 0116.5 12zM3 10v4h4l5 5V5L7 10H3zm14.59 7L21 20.41 19.59 21 3 4.41 4.41 3 17.59 16z"/></svg>),
 };
 
-// Minimal AES-GCM decryptor for ArrayBuffer (placeholder wiring)
-async function decryptAesGcm(cipher: ArrayBuffer, key: CryptoKey, iv: Uint8Array): Promise<ArrayBuffer> {
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+// Minimal AES-GCM decryptor for ArrayBuffer/Uint8Array
+async function decryptAesGcm(cipher: ArrayBuffer | Uint8Array, key: CryptoKey, iv: Uint8Array): Promise<ArrayBuffer> {
+  const srcAb: ArrayBuffer = cipher instanceof Uint8Array
+    ? (() => { const ab = new ArrayBuffer(cipher.byteLength); new Uint8Array(ab).set(cipher); return ab; })()
+    : cipher;
+  const ivAb: ArrayBuffer = (() => { const ab = new ArrayBuffer(iv.byteLength); new Uint8Array(ab).set(iv); return ab; })();
+  const out = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivAb }, key, srcAb as ArrayBuffer);
+  return out;
 }
 
 function formatTime(t: number) {
@@ -59,7 +64,7 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   const rafRef = useRef<number>();
   const [showSubMenu, setShowSubMenu] = useState(false);
   const [showAudioMenu, setShowAudioMenu] = useState(false);
-  const colorTimer = useRef<ReturnType<typeof window.setInterval> | null>(null);
+  const colorTimer = useRef<number | null>(null);
   const [showDrawer, setShowDrawer] = useState(false);
   const [playlist, setPlaylist] = useState<{ name: string; url: string }[]>([]);
   const objectUrlsRef = useRef<string[]>([]);
@@ -82,10 +87,12 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     // Join socket room for control sync
     try {
       const { io } = require('socket.io-client');
-      const s = io('/', { transports: ['websocket'] });
+      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+      const s = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
       ;(window as any).sharedSocket = s;
       s.on('connect', () => {
-        s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+        const r = sessionStorage.getItem('room') || 'demo';
+        s.emit('handshake', { room: r, name: sessionStorage.getItem(`room:${r}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${r}:myAvatar`) || undefined });
       });
       s.on('control', (payload: any) => {
         if (payload?.type === 'state') {

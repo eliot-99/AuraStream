@@ -33,7 +33,10 @@ dotenv.config({ path: rootEnvPath, override: true });
 const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
-  cors: { origin: process.env.CORS_ORIGIN || '*', methods: ['GET','POST'] }
+  cors: {
+    origin: '*',
+    methods: ['GET','POST'],
+  }
 });
 
 // Optional: Redis adapter for multi-instance scale
@@ -55,6 +58,7 @@ const io = new SocketIOServer(server, {
   }
 })();
 
+// Single Socket.IO connection handler (avoid duplicates)
 io.on('connection', (socket) => {
   let roomName: string | null = null;
 
@@ -70,7 +74,6 @@ io.on('connection', (socket) => {
   });
 
   socket.on('signal', (payload: any) => { if (roomName) io.to(roomName).emit('signal', payload); });
-
   socket.on('control', (payload: any) => { if (roomName) io.to(roomName).emit('control', payload); });
 
   socket.on('sync', (payload: any, cb?: Function) => {
@@ -83,11 +86,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
-    if (roomName) {
-      const count = io.sockets.adapter.rooms.get(roomName)?.size || 0;
-      io.to(roomName).emit('userLeft', { id: socket.id, room: roomName, count });
-    }
+  socket.on('disconnecting', () => {
+    if (!roomName) return;
+    const clients = io.sockets.adapter.rooms.get(roomName);
+    const nextCount = clients ? Math.max(0, clients.size - 1) : 0;
+    socket.to(roomName).emit('userLeft', { id: socket.id, room: roomName, count: nextCount });
   });
 });
 
@@ -110,6 +113,15 @@ app.use(rateLimit({ windowMs: 60_000, max: 120 }));
 // Basic health check
 app.get('/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
+});
+
+// Serve frontend build in production
+const clientDir = path.resolve(__dirname, '..', '..', 'frontend', 'home', 'dist');
+app.use(express.static(clientDir));
+// SPA fallback to index.html
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+  res.sendFile(path.join(clientDir, 'index.html'));
 });
 
 // Mongo connection
@@ -247,6 +259,10 @@ app.get('/api/webrtc/config', (_req, res) => {
 app.post('/api/webrtc/signal', async (req, res) => {
   const { room, payload } = (req.body || {}) as any;
   if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
+  // Validate payload type to reduce noise
+  if (!['offer','answer','ice-candidate'].includes(String(payload.type))) {
+    return res.status(400).json({ error: 'Invalid signal type' });
+  }
   io.to(room).emit('signal', payload);
   res.json({ ok: true });
 });
