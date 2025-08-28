@@ -56,7 +56,7 @@ export default function SharedRoom() {
     }, [room]);
     useEffect(() => {
         const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-        const socket = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
+        const socket = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io' });
         socketRef.current = socket;
         socket.on('connect', () => {
             const token = localStorage.getItem('auth');
@@ -284,7 +284,12 @@ export default function SharedRoom() {
         }
     }
     function sendSignal(payload) {
-        fetch('/api/webrtc/signal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, payload }) }).catch(() => { });
+        const senderId = socketRef.current?.id;
+        fetch('/api/webrtc/signal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ room, payload, senderId })
+        }).catch(() => { });
     }
     async function maybeNegotiate(_reason) { ensurePC(); }
     async function toggleCamera() {

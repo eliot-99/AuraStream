@@ -8,7 +8,7 @@ const DEFAULTS = {
     intensity: 1,
     size: 1,
 };
-const Lightning = forwardRef(({ hue = DEFAULTS.hue, xOffset = DEFAULTS.xOffset, speed = DEFAULTS.speed, intensity = DEFAULTS.intensity, size = DEFAULTS.size, qualityScale = 1, horizontal = false, }, ref) => {
+const Lightning = forwardRef(({ hue = DEFAULTS.hue, xOffset = DEFAULTS.xOffset, speed = DEFAULTS.speed, intensity = DEFAULTS.intensity, size = DEFAULTS.size, qualityScale = 1, horizontal = false, className, }, ref) => {
     const canvasRef = useRef(null);
     const glRef = useRef(null);
     const programRef = useRef(null);

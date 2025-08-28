@@ -58,30 +58,62 @@ const io = new SocketIOServer(server, {
   }
 })();
 
+// In-memory room membership tracking for diagnostics
+const roomsState = new Map<string, Set<string>>();
+function addToRoomState(room: string, id: string) {
+  if (!roomsState.has(room)) roomsState.set(room, new Set());
+  roomsState.get(room)!.add(id);
+}
+function removeFromRoomState(room: string, id: string) {
+  const set = roomsState.get(room);
+  if (set) { set.delete(id); if (set.size === 0) roomsState.delete(room); }
+}
+
 // Single Socket.IO connection handler (avoid duplicates)
 io.on('connection', (socket) => {
   let roomName: string | null = null;
+  console.log('[SOCKET][connect]', { id: socket.id, rooms: Array.from(socket.rooms || []) });
 
   socket.on('handshake', (payload: any = {}) => {
     try {
-      roomName = String(payload.room || 'demo');
+      const requested = (payload.room ?? 'demo');
+      roomName = typeof requested === 'string' ? requested.trim() : String(requested);
+      if (!roomName) roomName = 'demo';
       socket.join(roomName);
-      const count = io.sockets.adapter.rooms.get(roomName)?.size || 1;
+      addToRoomState(roomName, socket.id);
+      const members = io.sockets.adapter.rooms.get(roomName);
+      const count = members?.size || 1;
+      console.log('[SOCKET][handshake]', { id: socket.id, room: roomName, count, name: payload?.name, hasAvatar: !!payload?.avatar });
       io.to(roomName).emit('userJoined', { id: socket.id, room: roomName, count, name: payload.name, avatar: payload.avatar });
+      io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
     } catch (e) {
       console.error('[SOCKET][handshake][error]', e);
     }
   });
 
-  socket.on('signal', (payload: any) => { if (roomName) io.to(roomName).emit('signal', payload); });
-  socket.on('control', (payload: any) => { if (roomName) io.to(roomName).emit('control', payload); });
+  socket.on('signal', (payload: any) => {
+    const type = payload?.type || typeof payload;
+    console.log('[SOCKET][signal]', { from: socket.id, room: roomName, type, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
+    if (roomName) socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
+  });
+
+  socket.on('control', (payload: any) => {
+    console.log('[SOCKET][control]', { from: socket.id, room: roomName, payload });
+    if (roomName) io.to(roomName).emit('control', payload);
+  });
 
   socket.on('sync', (payload: any, cb?: Function) => {
     try {
-      if (payload && payload.type === 'ping') { if (cb) cb(null, { ok: true, ts: Date.now() }); return; }
+      if (payload && payload.type === 'ping') {
+        const ts = Date.now();
+        if (cb) cb(null, { ok: true, ts });
+        return;
+      }
+      console.log('[SOCKET][sync]', { from: socket.id, room: roomName, payload });
       if (roomName) io.to(roomName).emit('sync', payload);
       if (cb) cb(null, { ok: true });
     } catch (e) {
+      console.error('[SOCKET][sync][error]', e);
       if (cb) cb(e);
     }
   });
@@ -90,7 +122,18 @@ io.on('connection', (socket) => {
     if (!roomName) return;
     const clients = io.sockets.adapter.rooms.get(roomName);
     const nextCount = clients ? Math.max(0, clients.size - 1) : 0;
+    console.log('[SOCKET][disconnecting]', { id: socket.id, room: roomName, nextCount });
     socket.to(roomName).emit('userLeft', { id: socket.id, room: roomName, count: nextCount });
+  });
+
+  socket.on('disconnect', (reason) => {
+    if (roomName) {
+      removeFromRoomState(roomName, socket.id);
+      const members = io.sockets.adapter.rooms.get(roomName);
+      const count = members?.size || 0;
+      io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
+    }
+    console.log('[SOCKET][disconnect]', { id: socket.id, reason });
   });
 });
 
@@ -257,12 +300,15 @@ app.get('/api/webrtc/config', (_req, res) => {
 });
 
 app.post('/api/webrtc/signal', async (req, res) => {
-  const { room, payload } = (req.body || {}) as any;
+  const { room, payload, senderId } = (req.body || {}) as any;
   if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
+  const type = String(payload.type);
   // Validate payload type to reduce noise
-  if (!['offer','answer','ice-candidate'].includes(String(payload.type))) {
+  if (!['offer','answer','ice-candidate'].includes(type)) {
+    console.warn('[API][webrtc][signal][drop]', { room, type, senderId });
     return res.status(400).json({ error: 'Invalid signal type' });
   }
+  console.log('[API][webrtc][signal]', { room, type, senderId, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
   io.to(room).emit('signal', payload);
   res.json({ ok: true });
 });

@@ -62,7 +62,7 @@ export default function SharedRoom() {
 
   useEffect(() => {
     const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io' });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -201,7 +201,12 @@ export default function SharedRoom() {
   }
 
   function sendSignal(payload: any) {
-    fetch('/api/webrtc/signal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, payload }) }).catch(()=>{});
+    const senderId = socketRef.current?.id;
+    fetch('/api/webrtc/signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room, payload, senderId })
+    }).catch(()=>{});
   }
 
   async function maybeNegotiate(_reason: string) { ensurePC(); }

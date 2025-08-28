@@ -24,6 +24,7 @@ const DEFAULTS: LightningParams = {
 interface Props extends Partial<LightningParams> {
   qualityScale?: number; // 0.5..1: render scale vs CSS size
   horizontal?: boolean;  // if true, align beam horizontally
+  className?: string;    // optional CSS class for the canvas element
 }
 
 const Lightning = forwardRef<LightningHandle, Props>(({ 
@@ -34,6 +35,7 @@ const Lightning = forwardRef<LightningHandle, Props>(({
   size = DEFAULTS.size,
   qualityScale = 1,
   horizontal = false,
+  className,
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const glRef = useRef<WebGLRenderingContext | null>(null);

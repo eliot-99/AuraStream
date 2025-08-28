@@ -22,6 +22,7 @@ const Icon = {
   ),
   Volume: (p: any) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2a4.5 4.5 0 00-3.5-4.39v8.78A4.5 4.5 0 0016.5 12z"/></svg>),
   Mute: (p: any) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M16.5 12a4.5 4.5 0 01-4.5 4.5v-9A4.5 4.5 0 0116.5 12zM3 10v4h4l5 5V5L7 10H3zm14.59 7L21 20.41 19.59 21 3 4.41 4.41 3 17.59 16z"/></svg>),
+  Folder: (p: any) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M10 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2h-8l-2-2z"/></svg>),
 };
 
 // Minimal AES-GCM decryptor for ArrayBuffer/Uint8Array
@@ -66,39 +67,199 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   const [showAudioMenu, setShowAudioMenu] = useState(false);
   const colorTimer = useRef<number | null>(null);
   const [showDrawer, setShowDrawer] = useState(false);
-  const [playlist, setPlaylist] = useState<{ name: string; url: string }[]>([]);
   const objectUrlsRef = useRef<string[]>([]);
   const [msg, setMsg] = useState('');
+  const [showEmoji, setShowEmoji] = useState(false);
+  const msgInputRef = useRef<HTMLInputElement | null>(null);
+
+  const insertEmoji = (emoji: string) => {
+    const el = msgInputRef.current;
+    if (!el) { setMsg(prev => prev + emoji); setShowEmoji(false); return; }
+    const start = el.selectionStart ?? msg.length;
+    const end = el.selectionEnd ?? msg.length;
+    const next = msg.slice(0, start) + emoji + msg.slice(end);
+    setMsg(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + emoji.length;
+      try { el.setSelectionRange(pos, pos); } catch {}
+    });
+    setShowEmoji(false);
+  };
 
   // Avatars from SharedRoom (if available) + UI call toggles
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
+  const [myName, setMyName] = useState<string>('Me');
+  const [peerName, setPeerName] = useState<string>('Peer');
   const [camOn, setCamOn] = useState(false);
   const [micUiMuted, setMicUiMuted] = useState(false);
+  const myVideoRef = useRef<HTMLVideoElement>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  // Mic metering refs
+  const micAudioCtxRef = useRef<AudioContext | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micRafRef = useRef<number>();
+  const [myLevel, setMyLevel] = useState(0);
+  const [peerLevel, setPeerLevel] = useState(0);
+  const lastVuSentRef = useRef<number>(0);
+
+  // Active speaker flags
+  const meActive = useMemo(() => myLevel > 0.04 && myLevel > peerLevel + 0.02, [myLevel, peerLevel]);
+  const peerActive = useMemo(() => peerLevel > 0.04 && peerLevel > myLevel + 0.02, [myLevel, peerLevel]);
+
+  // Toggle camera: when on, replace avatar with local video
+  const toggleCam = async () => {
+    try {
+      if (!camOn) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: !micUiMuted });
+        localStreamRef.current = stream;
+        if (myVideoRef.current) (myVideoRef.current as any).srcObject = stream;
+        setCamOn(true);
+      } else {
+        const s = localStreamRef.current;
+        s?.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
+        if (myVideoRef.current) (myVideoRef.current as any).srcObject = null;
+        setCamOn(false);
+      }
+      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn: !camOn, micMuted: micUiMuted }); } catch {}
+    } catch {}
+  };
+
+  // Toggle mic: enable/disable audio track, request if missing
+  const toggleMic = async () => {
+    try {
+      const nextMuted = !micUiMuted;
+      const s = localStreamRef.current;
+      if (s) {
+        let aud = s.getAudioTracks();
+        if (!aud.length && !nextMuted) {
+          const a = await navigator.mediaDevices.getUserMedia({ audio: true });
+          a.getAudioTracks().forEach(tr => s.addTrack(tr));
+          aud = s.getAudioTracks();
+        }
+        aud.forEach(tr => tr.enabled = !nextMuted);
+      } else if (!nextMuted) {
+        const a = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStreamRef.current = a;
+        if (myVideoRef.current && (myVideoRef.current as any).srcObject instanceof MediaStream) {
+          const v = (myVideoRef.current as any).srcObject as MediaStream;
+          a.getAudioTracks().forEach(tr => v.addTrack(tr));
+        }
+      }
+
+      // Meter setup/teardown for glow animation
+      if (!nextMuted) {
+        // Turn on meter
+        const ctx = micAudioCtxRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
+        micAudioCtxRef.current = ctx;
+        const s2 = localStreamRef.current;
+        if (s2) {
+          try { micSourceRef.current?.disconnect(); } catch {}
+          micSourceRef.current = ctx.createMediaStreamSource(s2);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          micAnalyserRef.current = analyser;
+          micSourceRef.current.connect(analyser);
+          const data = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            analyser.getByteTimeDomainData(data);
+            // Compute RMS (0..1)
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+              const v = (data[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / data.length);
+            const smooth = Math.max(0, Math.min(1, rms * 1.6));
+            setMyLevel(prev => prev * 0.6 + smooth * 0.4); // simple smoothing
+
+            // Throttle sending level to peers (every ~120ms)
+            const now = performance.now();
+            if (now - (lastVuSentRef.current || 0) > 120) {
+              lastVuSentRef.current = now;
+              try { (window as any).sharedSocket?.emit('sync', { type: 'vu', level: Number((smooth).toFixed(3)) }); } catch {}
+            }
+
+            micRafRef.current = requestAnimationFrame(tick);
+          };
+          if (!micRafRef.current) micRafRef.current = requestAnimationFrame(tick);
+        }
+      } else {
+        // Turn off meter
+        if (micRafRef.current) cancelAnimationFrame(micRafRef.current);
+        micRafRef.current = undefined;
+        try { micSourceRef.current?.disconnect(); } catch {}
+        micSourceRef.current = null;
+        setMyLevel(0);
+        // keep audio context alive; optional to close
+      }
+
+      setMicUiMuted(nextMuted);
+      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn, micMuted: nextMuted }); } catch {}
+    } catch {}
+  };
+
+  // Ensure the stream is attached once the video element mounts after camOn flips true
+  useEffect(() => {
+    const v = myVideoRef.current;
+    const s = localStreamRef.current;
+    if (v && s && camOn) {
+      try {
+        (v as any).srcObject = s;
+        v.muted = true;
+        v.playsInline = true;
+        v.autoplay = true;
+        const play = () => { try { v.play(); } catch {} };
+        if (v.readyState >= 2) play(); else v.onloadedmetadata = play;
+      } catch {}
+    }
+  }, [camOn]);
+
   useEffect(() => {
     try {
       const room = sessionStorage.getItem('room') || 'demo';
       const me = sessionStorage.getItem(`room:${room}:myAvatar`);
       const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
+      const myN = sessionStorage.getItem(`room:${room}:myName`);
+      const peerN = sessionStorage.getItem(`room:${room}:peerName`);
       if (me) setMyAvatar(me);
       if (peer) setPeerAvatar(peer);
+      if (myN) setMyName(myN);
+      if (peerN) setPeerName(peerN);
     } catch {}
 
     // Join socket room for control sync
     try {
       const { io } = require('socket.io-client');
-      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-      const s = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
+      const s = io('/', { transports: ['websocket'] });
       ;(window as any).sharedSocket = s;
       s.on('connect', () => {
-        const r = sessionStorage.getItem('room') || 'demo';
-        s.emit('handshake', { room: r, name: sessionStorage.getItem(`room:${r}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${r}:myAvatar`) || undefined });
+        const room = sessionStorage.getItem('room') || 'demo';
+        s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
       });
       s.on('control', (payload: any) => {
         if (payload?.type === 'state') {
           if (typeof payload.micMuted === 'boolean') setMicUiMuted(payload.micMuted);
           if (typeof payload.camOn === 'boolean') setCamOn(payload.camOn);
         }
+      });
+      // Receive chat messages into the local drawer list
+      s.on('sync', (payload: any) => {
+        try {
+          if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
+            (window as any).__sharedChat = [
+              ...((window as any).__sharedChat || []),
+              { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
+            ];
+            const box = document.getElementById('chatScroll');
+            if (box) box.scrollTop = box.scrollHeight;
+          } else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+            setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+          }
+        } catch {}
       });
       return () => { try { s.disconnect(); } catch {} };
     } catch {}
@@ -171,24 +332,7 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     } catch {}
   };
 
-  const setSourceAndPlay = async (url: string) => {
-    const v = videoRef.current; if (!v) return;
-    try {
-      v.pause();
-      v.src = url;
-      // mirror source to decoy
-      if (decoyRef.current) {
-        try { decoyRef.current.pause(); } catch {}
-        decoyRef.current.src = url;
-        try { await decoyRef.current.load?.(); } catch {}
-      }
-      await v.load();
-      await v.play();
-      setPlaying(true);
-    } catch {
-      setPlaying(false);
-    }
-  };
+
   const handleSeek = (t: number) => { const v = videoRef.current; if (!v) return; v.currentTime = Math.max(0, Math.min(v.duration || t, t)); };
   const handleSkip = (d: number) => { const v = videoRef.current; if (!v) return; handleSeek((v.currentTime || 0) + d); };
 
@@ -238,7 +382,18 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
   // Load provided src (object URL or remote) if passed
   useEffect(() => {
-    if (src) setSourceAndPlay(src);
+    if (src) {
+      const v = videoRef.current;
+      const d = decoyRef.current;
+      if (v) {
+        v.src = src;
+        v.load();
+      }
+      if (d) {
+        d.src = src;
+        d.load();
+      }
+    }
   }, [src]);
 
   // Smooth playback hints + track state wiring + strong decoy sync
@@ -299,98 +454,11 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     };
   }, [subsEnabled]);
 
-  // Fallback picker using a hidden input appended to the DOM (works across browsers)
-  const pickFilesFromInput = async (): Promise<File[]> => {
-    return new Promise<File[]>((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.accept = 'video/*';
-      (input as any).webkitdirectory = true; // Chromium/WebKit
-      input.setAttribute('webkitdirectory', '');
-      input.setAttribute('directory', '');
-      input.setAttribute('mozdirectory', '');
-      // Hide from layout but keep in DOM for click to be honored
-      input.style.position = 'fixed';
-      input.style.left = '-9999px';
-      document.body.appendChild(input);
-      input.onchange = () => {
-        const files = Array.from(input.files || []) as File[];
-        input.remove();
-        resolve(files);
-      };
-      input.click();
-    });
-  };
 
-  const handleSelectDirectory = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      const btn = e.currentTarget as HTMLButtonElement;
-      btn.classList.add('ring-2','ring-blue-400','scale-95');
-      setTimeout(() => btn.classList.remove('ring-2','ring-blue-400','scale-95'), 220);
-    } catch {}
-
-    const loaded: { name: string; url: string }[] = [];
-
-    // Try native directory picker first; fall back to hidden input if unavailable or fails
-    try {
-      if ('showDirectoryPicker' in window) {
-        // @ts-ignore - experimental API
-        const dirHandle = await (window as any).showDirectoryPicker();
-        // @ts-ignore
-        for await (const [, handle] of (dirHandle as any).entries()) {
-          if ((handle as any).kind !== 'file') continue;
-          const file = await (handle as any).getFile();
-          if (!file.type.startsWith('video/')) continue;
-          const url = URL.createObjectURL(file);
-          objectUrlsRef.current.push(url);
-          loaded.push({ name: file.name, url });
-        }
-      } else {
-        const files = await pickFilesFromInput();
-        const vids = files.filter(f => f.type.startsWith('video/'));
-        for (const f of vids) {
-          const url = URL.createObjectURL(f);
-          objectUrlsRef.current.push(url);
-          loaded.push({ name: f.name, url });
-        }
-      }
-    } catch {
-      // Any error with showDirectoryPicker → fallback to input
-      const files = await pickFilesFromInput();
-      const vids = files.filter(f => f.type.startsWith('video/'));
-      for (const f of vids) {
-        const url = URL.createObjectURL(f);
-        objectUrlsRef.current.push(url);
-        loaded.push({ name: f.name, url });
-      }
-    }
-
-    if (loaded.length) {
-      setPlaylist(loaded);
-      await setSourceAndPlay(loaded[0].url);
-    }
-  };
 
   const TransportIcon = playing ? Icon.Pause : Icon.Play;
 
-  // Playlist navigation helpers
-  const handleNext = async () => {
-    if (!playlist.length) return;
-    const v = videoRef.current; if (!v) return;
-    const currentIdx = playlist.findIndex(p => p.url === v.src);
-    const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % playlist.length : 0;
-    await setSourceAndPlay(playlist[nextIdx].url);
-  };
-  const handlePrev = async () => {
-    if (!playlist.length) return;
-    const v = videoRef.current; if (!v) return;
-    const currentIdx = playlist.findIndex(p => p.url === v.src);
-    const prevIdx = currentIdx > 0 ? currentIdx - 1 : (playlist.length - 1);
-    await setSourceAndPlay(playlist[prevIdx].url);
-  };
+
 
   return (
     <div className="relative min-h-screen text-white font-montserrat overflow-hidden">
@@ -447,11 +515,9 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
               {/* debug click feedback */}
               {/* Transport group */}
               <div className="flex items-center gap-2">
-                <button onClick={handlePrev} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Previous"><Icon.Prev className="w-5 h-5" /></button>
                 <button onClick={() => handleSkip(-5)} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Back 5s"><Icon.SkipBack className="w-5 h-5" /></button>
                 <button onClick={togglePlay} className="h-12 w-12 rounded-full bg-cyan-400/30 border border-white/30 flex items-center justify-center hover:scale-110 transition"><TransportIcon className="w-7 h-7" /></button>
                 <button onClick={() => handleSkip(5)} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Forward 5s"><Icon.SkipFwd className="w-5 h-5" /></button>
-                <button onClick={handleNext} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Next"><Icon.Next className="w-5 h-5" /></button>
               </div>
               {/* Timeline (no text labels) */}
               <div className="flex items-center gap-3 flex-1">
@@ -499,93 +565,130 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
                 <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20">
                   <button
                     onClick={() => { const el = videoRef.current; if (!el) return; el.muted = !el.muted; setMuted(el.muted); }}
-                    className={`h-9 w-9 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`}
-                    title="Mute"
+                    className="h-8 w-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center"
                     aria-label="Mute"
                   >
                     {muted ? <Icon.Mute className="w-5 h-5" /> : <Icon.Volume className="w-5 h-5" />}
                   </button>
-                  <div className="relative w-[160px] h-7">
-                    <div className="absolute inset-y-0 left-0 right-0 my-[12px] rounded-full bg-white/10" />
-                    <div className="absolute inset-y-0 left-0 my-[12px] rounded-full" style={{ width: `${volume * 100}%`, background: 'linear-gradient(90deg, rgba(59,130,246,1), rgba(29,78,216,1))', boxShadow: '0 0 14px rgba(59,130,246,0.55)' }} />
-                    <input type="range" min={0} max={1} step={0.01} value={volume} onChange={(e) => { const v = Number(e.target.value); setVolume(v); const el = videoRef.current; if (el) el.volume = v; }} className="absolute inset-0 w-full appearance-none bg-transparent h-7" aria-label="Volume" />
-                  </div>
+                  <input type="range" min={0} max={1} step={0.01} value={volume} onChange={(e) => { const v = Number(e.target.value); setVolume(v); const el = videoRef.current; if (el) el.volume = v; }} className="w-24" aria-label="Volume" />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Drawer: video list (rendered in a portal to escape parent stacking context) */}
+          {/* Drawer overlay (portal to body to avoid stacking issues) */}
           {showDrawer && createPortal(
-            <>
-              <div className="fixed inset-0 z-[5000] bg-black/40" onClick={() => setShowDrawer(false)} />
-              <div
-                className={`fixed top-0 right-0 h-full w-[80%] max-w-[360px] z-[5001] bg-black/80 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}
-                role="dialog"
-                aria-modal="true"
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                style={{ pointerEvents: 'auto' }}
-              >
+            <div className="fixed inset-0 z-[1001]">
+              {/* Backdrop */}
+              <div className="absolute inset-0 bg-black/50" onClick={() => setShowDrawer(false)} />
+              {/* Panel */}
+              <div className="absolute top-0 right-0 h-full w-[80%] max-w-[380px] bg-black/70 backdrop-blur-md border-l border-white/15 shadow-xl">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-                  <div className="text-white/90 font-medium">Call Controls</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={(e) => {
+                  <div className="text-white/90 font-medium">Call</div>
+                  <button onClick={() => setShowDrawer(false)} className="h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition" aria-label="Close">
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2"/></svg>
+                  </button>
+                </div>
+
+                {/* CONTENT */}
+                <div className="flex flex-col h-[calc(100%-52px)]">
+                  {/* TOP: Call cards (scrollable) */}
+                  <div className="flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2">
+
+
+                    {/* Call cards */}
+                    <div className="grid grid-cols-1 gap-3">
+                      <div className="relative w-full flex flex-col items-center">
+                        <div className="w-[300px] h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
+                             style={{ boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }}>
+                          {camOn ? (
+                            <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
+                          ) : (
+                            myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span>🧑</span>
+                          )}
+                        </div>
+                        <div className="mt-2 text-white/80 text-sm text-center truncate">{myName}</div>
+                      </div>
+                      <div className="relative w-full flex flex-col items-center">
+                        <div className="w-[300px] h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
+                             style={{ boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }}>
+                          {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span>👤</span>}
+                        </div>
+                        <div className="mt-2 text-white/80 text-sm text-center truncate">{peerName}</div>
+                      </div>
+                      <div className="mt-2 flex items-center justify-center gap-3">
+                        <button onClick={toggleCam} title="Open Video" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
+                        </button>
+                        <button onClick={toggleMic} title="Open Audio" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* BOTTOM: chat panel */}
+                  <div className="h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col">
+                    {/* Scroll area for messages */}
+                    <div id="chatScroll" className="flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10">
+                      {(window as any).__sharedChat?.length ? (window as any).__sharedChat.map((m: any) => (
+                        <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`}>
+                            <div className="whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm">{m.text}</div>
+                            <div className="mt-0.5 text-[10px] text-white/60 text-right">{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="text-xs text-white/60 text-center py-4">No messages yet. Say hello!</div>
+                      )}
+                    </div>
+                    {/* Composer */}
+                    <form
+                      onSubmit={(e) => {
                         e.preventDefault();
-                        e.stopPropagation();
-                        setShowDrawer(false);
+                        try {
+                          const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined;
+                          const text = msg.trim();
+                          if (!text) return;
+                          (window as any).__sharedChat = [
+                            ...((window as any).__sharedChat || []),
+                            { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: true, text, ts: Date.now() }
+                          ];
+                          s?.emit('sync', { type: 'chat', text });
+                          setMsg('');
+                          const box = document.getElementById('chatScroll');
+                          if (box) box.scrollTop = box.scrollHeight;
+                        } catch {}
                       }}
-                      className="h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center transition-transform hover:scale-105 active:scale-95 hover:bg-white/20 hover:border-white/30"
-                      title="Close"
-                      aria-label="Close"
+                      className="mt-2 pb-2 flex items-center gap-2"
                     >
-                      <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2"/></svg>
-                    </button>
+                      <div className="relative flex-1">
+                        <input
+                          ref={msgInputRef}
+                          value={msg}
+                          onChange={(e) => setMsg(e.target.value)}
+                          placeholder="Write a message…"
+                          className="w-full pr-10 px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none focus:ring-2 focus:ring-cyan-400/60"
+                        />
+                        <button type="button" onClick={() => setShowEmoji(v=>!v)} title="Emoji" className="absolute right-2 top-1/2 -translate-y-1/2 text-white/80 hover:text-white">😊</button>
+                        {showEmoji && (
+                          <div className="absolute right-0 bottom-[110%] z-10 w-56 rounded-xl bg-white/10 backdrop-blur-md border border-white/20 p-2 shadow-xl">
+                            <div className="grid grid-cols-8 gap-1 text-lg">
+                              {['😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🤗','🤔','😴','😇','🥳','👍','🙏','🔥','✨','🎉','💙','💜','💡','🎵','🎬','🕹️','⚡','🌟','🌈','☕','🍿'].map(e => (
+                                <button key={e} type="button" className="hover:scale-110 transition" onClick={() => insertEmoji(e)}>{e}</button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <button type="submit" className="h-9 px-3 rounded-xl bg-white/10 border border-white/20 hover:bg-white/15">Send</button>
+                    </form>
                   </div>
                 </div>
-                <div className="overflow-y-auto max-h-[calc(100%-52px)] p-0">
-                  {/* Full-height call sidebar content */}
-                  <div className="flex flex-col h-full text-white">
-                    {/* Avatars at top */}
-                    <div className="px-4 pt-4 pb-2 flex flex-col items-center gap-6">
-                      <div className="relative">
-                        <div className="absolute inset-[-10px] rounded-full blur-[16px]" style={{ boxShadow: '0 0 40px rgba(59,130,246,0.5), 0 0 64px rgba(16,185,129,0.35)' }} />
-                        <div className="w-20 h-20 rounded-full bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center">
-                          {myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span className="text-2xl">🧑</span>}
-                        </div>
-                      </div>
-                      <div className="relative">
-                        <div className="absolute inset-[-10px] rounded-full blur-[16px]" style={{ boxShadow: '0 0 40px rgba(236,72,153,0.5), 0 0 64px rgba(168,85,247,0.35)' }} />
-                        <div className="w-20 h-20 rounded-full bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center">
-                          {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span className="text-2xl">👤</span>}
-                        </div>
-                      </div>
-                    </div>
 
-                    {/* Buttons under avatars */}
-                    <div className="px-4 pb-2 flex items-center justify-center gap-3">
-                      <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-cam' }); } catch {} }} title="Open Video" className={`h-11 w-11 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
-                      </button>
-                      <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-mic' }); } catch {} }} title="Open Audio" className={`h-11 w-11 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-                      </button>
-                    </div>
 
-                    {/* Message area fills the rest */}
-                    <div className="mt-2 px-4 pb-4 flex-1 flex flex-col">
-                      <form onSubmit={(e) => { e.preventDefault(); try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; if (msg.trim()) { s?.emit('sync', { type: 'chat', text: msg.trim() }); setMsg(''); } } catch {} }} className="mt-auto flex items-center gap-2">
-                        <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message..." className="flex-1 px-3 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" />
-                        <button type="submit" className="h-11 px-4 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20">Send</button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
               </div>
-            </>,
+            </div>,
             document.body
           )}
       </main>

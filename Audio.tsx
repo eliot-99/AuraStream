@@ -161,9 +161,11 @@ type Props = {
   name?: string; // initial single track name
 };
 
-export default function AudioPlayerShared({ onBack, src, name }: Props) {
-  // Single track state
-  const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+export default function AudioPlayer({ onBack, src, name }: Props) {
+  // Playlist and playback state
+  const [playlist, setPlaylist] = useState<Track[]>([]);
+  const [index, setIndex] = useState(0);
+  const current = playlist[index];
 
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -185,6 +187,8 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
   // Visual sync state
   const [vizEnergy, setVizEnergy] = useState(0);
   const lightningRef = useRef<LightningHandle>(null);
+  // Removed circular waveform canvas
+  // const circleCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Visual tuning
   const [hue, setHue] = useState(230);
@@ -195,172 +199,10 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
   const [size, setSize] = useState(1.0);
   const [sensitivity, setSensitivity] = useState(1.7);
   const [smoothing, setSmoothing] = useState(0.1); // a bit snappier
+  const [showTuning, setShowTuning] = useState(false); // removed from UI
   const [showDrawer, setShowDrawer] = useState(false);
 
   const objectUrlsRef = useRef<string[]>([]);
-  const [msg, setMsg] = useState('');
-  const [showEmoji, setShowEmoji] = useState(false);
-  const msgInputRef = useRef<HTMLInputElement | null>(null);
-
-  const insertEmoji = (emoji: string) => {
-    const el = msgInputRef.current;
-    if (!el) { setMsg(prev => prev + emoji); setShowEmoji(false); return; }
-    const start = el.selectionStart ?? msg.length;
-    const end = el.selectionEnd ?? msg.length;
-    const next = msg.slice(0, start) + emoji + msg.slice(end);
-    setMsg(next);
-    requestAnimationFrame(() => {
-      el.focus();
-      const pos = start + emoji.length;
-      try { el.setSelectionRange(pos, pos); } catch {}
-    });
-    setShowEmoji(false);
-  };
-
-  // Avatars from SharedRoom (if available) + UI call toggles
-  const [myAvatar, setMyAvatar] = useState<string | null>(null);
-  const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
-  const [myName, setMyName] = useState<string>('Me');
-  const [peerName, setPeerName] = useState<string>('Peer');
-  const [camOn, setCamOn] = useState(false);
-  const [micUiMuted, setMicUiMuted] = useState(false);
-  const myVideoRef = useRef<HTMLVideoElement>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  // Mic metering refs
-  const micAudioCtxRef = useRef<AudioContext | null>(null);
-  const micAnalyserRef = useRef<AnalyserNode | null>(null);
-  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const micRafRef = useRef<number>();
-  const [myLevel, setMyLevel] = useState(0);
-  const [peerLevel, setPeerLevel] = useState(0);
-  const lastVuSentRef = useRef<number>(0);
-
-  // Active speaker flags
-  const meActive = useMemo(() => myLevel > 0.04 && myLevel > peerLevel + 0.02, [myLevel, peerLevel]);
-  const peerActive = useMemo(() => peerLevel > 0.04 && peerLevel > myLevel + 0.02, [myLevel, peerLevel]);
-
-  // Toggle camera: when on, replace avatar with local video
-  const toggleCam = async () => {
-    try {
-      if (!camOn) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: !micUiMuted });
-        localStreamRef.current = stream;
-        if (myVideoRef.current) (myVideoRef.current as any).srcObject = stream;
-        setCamOn(true);
-      } else {
-        const s = localStreamRef.current;
-        s?.getTracks().forEach(t => t.stop());
-        localStreamRef.current = null;
-        if (myVideoRef.current) (myVideoRef.current as any).srcObject = null;
-        setCamOn(false);
-      }
-      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn: !camOn, micMuted: micUiMuted }); } catch {}
-    } catch {}
-  };
-
-  // Toggle mic: enable/disable audio track, request if missing
-  const toggleMic = async () => {
-    try {
-      const nextMuted = !micUiMuted;
-      const s = localStreamRef.current;
-      if (s) {
-        let aud = s.getAudioTracks();
-        if (!aud.length && !nextMuted) {
-          const a = await navigator.mediaDevices.getUserMedia({ audio: true });
-          a.getAudioTracks().forEach(tr => s.addTrack(tr));
-          aud = s.getAudioTracks();
-        }
-        aud.forEach(tr => tr.enabled = !nextMuted);
-      } else if (!nextMuted) {
-        const a = await navigator.mediaDevices.getUserMedia({ audio: true });
-        localStreamRef.current = a;
-        if (myVideoRef.current && (myVideoRef.current as any).srcObject instanceof MediaStream) {
-          const v = (myVideoRef.current as any).srcObject as MediaStream;
-          a.getAudioTracks().forEach(tr => v.addTrack(tr));
-        }
-      }
-
-      // Meter setup/teardown for glow animation
-      if (!nextMuted) {
-        // Turn on meter
-        const ctx = micAudioCtxRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
-        micAudioCtxRef.current = ctx;
-        const s2 = localStreamRef.current;
-        if (s2) {
-          try { micSourceRef.current?.disconnect(); } catch {}
-          micSourceRef.current = ctx.createMediaStreamSource(s2);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          micAnalyserRef.current = analyser;
-          micSourceRef.current.connect(analyser);
-          const data = new Uint8Array(analyser.frequencyBinCount);
-          const tick = () => {
-            analyser.getByteTimeDomainData(data);
-            // Compute RMS (0..1)
-            let sum = 0;
-            for (let i = 0; i < data.length; i++) {
-              const v = (data[i] - 128) / 128;
-              sum += v * v;
-            }
-            const rms = Math.sqrt(sum / data.length);
-            const smooth = Math.max(0, Math.min(1, rms * 1.6));
-            setMyLevel(prev => prev * 0.6 + smooth * 0.4); // simple smoothing
-
-            // Throttle sending level to peers (every ~120ms)
-            const now = performance.now();
-            if (now - (lastVuSentRef.current || 0) > 120) {
-              lastVuSentRef.current = now;
-              try { (window as any).sharedSocket?.emit('sync', { type: 'vu', level: Number((smooth).toFixed(3)) }); } catch {}
-            }
-
-            micRafRef.current = requestAnimationFrame(tick);
-          };
-          if (!micRafRef.current) micRafRef.current = requestAnimationFrame(tick);
-        }
-      } else {
-        // Turn off meter
-        if (micRafRef.current) cancelAnimationFrame(micRafRef.current);
-        micRafRef.current = undefined;
-        try { micSourceRef.current?.disconnect(); } catch {}
-        micSourceRef.current = null;
-        setMyLevel(0);
-        // keep audio context alive; optional to close
-      }
-
-      setMicUiMuted(nextMuted);
-      try { (window as any).sharedSocket?.emit('control', { type: 'state', camOn, micMuted: nextMuted }); } catch {}
-    } catch {}
-  };
-
-  // Ensure the stream is attached once the video element mounts after camOn flips true
-  useEffect(() => {
-    const v = myVideoRef.current;
-    const s = localStreamRef.current;
-    if (v && s && camOn) {
-      try {
-        (v as any).srcObject = s;
-        v.muted = true;
-        v.playsInline = true;
-        v.autoplay = true;
-        const play = () => { try { v.play(); } catch {} };
-        if (v.readyState >= 2) play(); else v.onloadedmetadata = play;
-      } catch {}
-    }
-  }, [camOn]);
-
-  useEffect(() => {
-    try {
-      const room = sessionStorage.getItem('room') || 'demo';
-      const me = sessionStorage.getItem(`room:${room}:myAvatar`);
-      const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
-      const myN = sessionStorage.getItem(`room:${room}:myName`);
-      const peerN = sessionStorage.getItem(`room:${room}:peerName`);
-      if (me) setMyAvatar(me);
-      if (peer) setPeerAvatar(peer);
-      if (myN) setMyName(myN);
-      if (peerN) setPeerName(peerN);
-    } catch {}
-  }, []);
 
   // Initialize with a single track if provided
   useEffect(() => {
@@ -378,27 +220,28 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
             coverUrl = URL.createObjectURL(coverBlob);
             objectUrlsRef.current.push(coverUrl);
           }
-          setCurrentTrack({ name: name || 'Audio', url: src, cover: coverUrl });
+          setPlaylist([{ name: name || 'Audio', url: src, cover: coverUrl }]);
         } catch {
-          setCurrentTrack({ name: name || 'Audio', url: src, cover: FALLBACK_COVER });
+          setPlaylist([{ name: name || 'Audio', url: src, cover: FALLBACK_COVER }]);
         }
       })();
+      setIndex(0);
     }
     return () => {
-      // Revoke any object URLs created
+      // Revoke any object URLs created via directory picker
       objectUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
       objectUrlsRef.current = [];
     };
   }, [src, name]);
 
-  // Autoplay track and init visualizer when track is set
+  // Autoplay first track and init visualizer when a non-empty playlist is set
   useEffect(() => {
-    if (!currentTrack) return;
+    if (!playlist.length) return;
     const a = audioRef.current;
     if (!a) return;
     // Set the audio src explicitly to ensure updates
     a.pause();
-    a.src = currentTrack.url || '';
+    a.src = playlist[0]?.url || '';
     a.load();
     const start = async () => {
       try {
@@ -409,7 +252,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     };
     start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTrack]);
+  }, [playlist]);
 
   // Audio energy tracking to sync Lightning background and cover glow only
   const startVisualizer = () => {
@@ -474,10 +317,8 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       const source = ctx.createMediaElementSource(audio);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
-      // Tap the media element into the analyser only. Do NOT connect the analyser to the destination
-      // to avoid creating a second audio path (which causes duplicate playback).
       source.connect(analyser);
-      // Leave the element's native audio output active; no WebAudio destination connection here.
+      analyser.connect(ctx.destination);
       audioCtxRef.current = ctx;
       analyserRef.current = analyser;
       sourceRef.current = source;
@@ -524,13 +365,15 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         a.currentTime = 0;
         a.play();
         setPlaying(true);
+      } else {
+        handleNext();
       }
     });
     return () => {
       a.removeEventListener('timeupdate', onTime);
       a.removeEventListener('loadedmetadata', onLoaded);
     };
-  }, [loop]);
+  }, [loop, index, playlist.length]);
 
   const handlePlayPause = async () => {
     try {
@@ -553,15 +396,123 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     handleSeek(a.currentTime + delta);
   };
 
+  const handlePrev = async () => {
+    if (playlist.length === 0) return;
+    const nextIndex = (index - 1 + playlist.length) % playlist.length;
+    setIndex(nextIndex);
+    setPlaying(false);
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      a.src = playlist[nextIndex]?.url || '';
+      a.load();
+      try { await ensureAudioReady(); await a.play(); setPlaying(true); } catch {}
+    }
+  };
 
+  const handleNext = async () => {
+    if (playlist.length === 0) return;
+    let nextIndex = index + 1;
+    if (shuffle) {
+      nextIndex = Math.floor(Math.random() * playlist.length);
+    }
+    if (nextIndex >= playlist.length) nextIndex = 0;
+    setIndex(nextIndex);
+    setPlaying(false);
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      a.src = playlist[nextIndex]?.url || '';
+      a.load();
+      try { await ensureAudioReady(); await a.play(); setPlaying(true); } catch {}
+    }
+  };
+
+  const handleDirectory = async () => {
+    try {
+      const loadedTracks: Track[] = [];
+      // Prefer File System Access API
+      // @ts-ignore
+      if (window.showDirectoryPicker) {
+        // @ts-ignore
+        const dirHandle = await window.showDirectoryPicker();
+        // @ts-ignore
+        for await (const [, handle] of dirHandle.entries()) {
+          if (handle.kind !== 'file') continue;
+          const file = await handle.getFile();
+          if (!file.type.startsWith('audio/')) continue; // ensure only audio files
+          const url = URL.createObjectURL(file);
+          let coverUrl: string | undefined;
+          try {
+            const coverBlob = await extractCoverFromFile(file);
+            if (coverBlob) {
+              coverUrl = URL.createObjectURL(coverBlob);
+              objectUrlsRef.current.push(coverUrl);
+            } else {
+              coverUrl = FALLBACK_COVER;
+            }
+          } catch {
+            coverUrl = FALLBACK_COVER;
+          }
+          objectUrlsRef.current.push(url);
+          loadedTracks.push({ name: file.name, url, cover: coverUrl });
+        }
+      } else {
+        // Fallback: hidden input with directory selection
+        const input = document.createElement('input');
+        input.type = 'file';
+        (input as any).webkitdirectory = true;
+        input.multiple = true;
+        input.accept = 'audio/*';
+        const files = await new Promise<File[]>((resolve) => {
+          input.onchange = () => resolve(Array.from(input.files || []) as File[]);
+          input.click();
+        });
+        const audioFiles = files.filter(f => f.type.startsWith('audio/'));
+        for (const f of audioFiles) {
+          const url = URL.createObjectURL(f);
+          let coverUrl: string | undefined;
+          try {
+            const coverBlob = await extractCoverFromFile(f as File);
+            if (coverBlob) {
+              coverUrl = URL.createObjectURL(coverBlob);
+              objectUrlsRef.current.push(coverUrl);
+            } else {
+              coverUrl = FALLBACK_COVER;
+            }
+          } catch {
+            coverUrl = FALLBACK_COVER;
+          }
+          objectUrlsRef.current.push(url);
+          loadedTracks.push({ name: f.name, url, cover: coverUrl });
+        }
+      }
+
+      if (loadedTracks.length > 0) {
+        setPlaylist(loadedTracks);
+        setIndex(0);
+        setPlaying(false);
+        // autoplay first track explicitly
+        const a = audioRef.current;
+        if (a) {
+          a.src = loadedTracks[0].url;
+          try { await initAudioGraph(); await a.play(); setPlaying(true); } catch {}
+        }
+      } else {
+        setError('No audio files in folder');
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Failed to open directory');
+    }
+  };
 
   // Derived labels
-  const title = useMemo(() => currentTrack?.name || 'Audio', [currentTrack]);
+  const title = useMemo(() => current?.name || 'Audio', [current]);
   const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
 
   // Update lightning hue from current cover image
   useEffect(() => {
-    const url = currentTrack?.cover;
+    const url = current?.cover;
     let cancelled = false;
     (async () => {
       if (!url) return;
@@ -569,11 +520,33 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       if (!cancelled && h != null) setHue(h);
     })();
     return () => { cancelled = true; };
-  }, [currentTrack?.cover]);
+  }, [current?.cover]);
 
   // Background parameters from vizEnergy
   const speed = speedBase + vizEnergy * speedScale;
   const intensity = intensityBase + vizEnergy * intensityScale;
+
+  // Attach socket for control sync
+  useEffect(() => {
+    try {
+      const { io } = require('socket.io-client');
+      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+      const s = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io' });
+      ;(window as any).sharedSocket = s;
+      const room = sessionStorage.getItem('room') || 'demo';
+      s.on('connect', () => {
+        s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+      });
+      s.on('control', (payload: any) => {
+        if (payload?.type === 'state') {
+          if (typeof payload.micMuted === 'boolean') setMuted(payload.micMuted);
+        }
+      });
+      return () => { try { s.disconnect(); } catch {} };
+    } catch {}
+  }, []);
+
+  const [msg, setMsg] = useState('');
 
   return (
     <div className="relative min-h-screen w-full font-montserrat text-white">
@@ -634,7 +607,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
             }}
           >
             <img
-              src={currentTrack?.cover || FALLBACK_COVER}
+              src={current?.cover || FALLBACK_COVER}
               alt="cover"
               className="w-[32vmin] h-[32vmin] max-w-[280px] max-h-[280px] rounded-full object-cover"
               draggable={false}
@@ -646,7 +619,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between">
         <button
-          onClick={() => (onBack ? onBack() : window.history.back())}
+          onClick={() => { try { location.hash = '#/shared'; } catch { (onBack ? onBack() : window.history.back()); } }}
           aria-label="Back"
           className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition"
         >
@@ -672,16 +645,78 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         </div>
       </div>
 
+      {/* Side drawer: file list */}
+      <div className={`fixed top-0 right-0 h-full w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+          <div className="text-white/90 font-medium">Call Controls</div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowDrawer(false)} aria-label="Close" title="Close" className="h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div className="h-[calc(100%-52px)] overflow-y-auto p-0">
+          {/* Full-height call sidebar content */}
+          <div className="flex flex-col h-full text-white">
+            {/* Avatars at top - larger rectangles */}
+            <div className="px-4 pt-4 pb-2 flex flex-col items-center gap-6">
+              <div className="relative">
+                <div className="absolute inset-[-10px] rounded-xl blur-[16px]" style={{ boxShadow: '0 0 40px rgba(59,130,246,0.5), 0 0 64px rgba(16,185,129,0.35)' }} />
+                <div className="w-28 h-20 rounded-xl bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center">
+                  <span className="text-2xl">🧑</span>
+                </div>
+              </div>
+              <div className="relative">
+                <div className="absolute inset-[-10px] rounded-xl blur-[16px]" style={{ boxShadow: '0 0 40px rgba(236,72,153,0.5), 0 0 64px rgba(168,85,247,0.35)' }} />
+                <div className="w-28 h-20 rounded-xl bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center">
+                  <span className="text-2xl">👤</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Buttons under avatars - larger */}
+            <div className="px-4 pb-2 flex items-center justify-center gap-4">
+              <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-cam' }); } catch {} }}
+                title="Open Video" className="h-12 w-12 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
+              </button>
+              <button onClick={() => { try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; s?.emit('control', { type: 'toggle-mic' }); } catch {} }}
+                title="Open Audio" className="h-12 w-12 rounded-full backdrop-blur-md border bg-white/10 border-white/30 hover:scale-110 transition flex items-center justify-center">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+              </button>
+            </div>
+
+            {/* Message area fills the rest - full width */}
+            <div className="mt-2 px-4 pb-4 flex-1 flex flex-col">
+              <form onSubmit={(e) => { e.preventDefault(); try { const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined; if (msg.trim()) { s?.emit('sync', { type: 'chat', text: msg.trim() }); setMsg(''); } } catch {} }} className="mt-auto flex items-center gap-2 w-full">
+                <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Message..." className="flex-1 min-h-[44px] px-3 py-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none" />
+                <button type="submit" className="h-11 px-4 rounded-xl bg-white/10 border border-white/20 hover:bg-white/20">Send</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Bottom controls - single aligned bar */}
       <div className="absolute bottom-4 left-0 right-0 z-20 px-4">
         <div className="w-full max-w-6xl mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+          {/* Open drawer button (top-right of control bar) */}
+          <button onClick={() => setShowDrawer(true)} className="ml-auto h-10 w-10 rounded-full bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition" title="Open Playlist & Call Controls" aria-label="Open Playlist & Call Controls">
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+          </button>
           {/* Transport group */}
           <div className="flex items-center gap-2">
             <button onClick={() => handleSkip(-5)} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Back 5s">
               <Icon.SkipBack className="w-5 h-5" />
             </button>
+            <button onClick={handlePrev} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Previous">
+              <Icon.Prev className="w-5 h-5" />
+            </button>
             <button onClick={handlePlayPause} className="h-12 w-12 rounded-full bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border border-white/30 flex items-center justify-center hover:scale-110 transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm">
               {playing ? <Icon.Pause className="w-7 h-7" /> : <Icon.Play className="w-7 h-7" />}
+            </button>
+            <button onClick={handleNext} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Next">
+              <Icon.Next className="w-5 h-5" />
             </button>
             <button onClick={() => handleSkip(5)} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Forward 5s">
               <Icon.SkipFwd className="w-5 h-5" />
@@ -743,113 +778,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       </div>
 
       {/* Hidden audio element */}
-      <audio ref={audioRef} src={currentTrack?.url} preload="metadata" />
-
-      {/* Side drawer: file list + call controls + chat (EXACT original structure) */}
-      <div className={`fixed top-0 right-0 h-full w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <div className="text-white/90 font-medium">Call</div>
-          <button onClick={() => setShowDrawer(false)} className="h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition" aria-label="Close">
-            <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2"/></svg>
-          </button>
-        </div>
-
-        {/* CONTENT */}
-        <div className="flex flex-col h-[calc(100%-52px)]">
-          {/* TOP: Call cards (scrollable) */}
-          <div className="flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2">
-
-
-            {/* Call cards */}
-            <div className="grid grid-cols-1 gap-3">
-              <div className="relative w-full flex flex-col items-center">
-                <div className="w-[300px] h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
-                     style={{ boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }}>
-                  {camOn ? (
-                    <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
-                  ) : (
-                    myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span>🧑</span>
-                  )}
-                </div>
-                <div className="mt-2 text-white/80 text-sm text-center truncate">{myName}</div>
-              </div>
-              <div className="relative w-full flex flex-col items-center">
-                <div className="w-[300px] h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
-                     style={{ boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }}>
-                  {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span>👤</span>}
-                </div>
-                <div className="mt-2 text-white/80 text-sm text-center truncate">{peerName}</div>
-              </div>
-              <div className="mt-2 flex items-center justify-center gap-3">
-                <button onClick={toggleCam} title="Open Video" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
-                </button>
-                <button onClick={toggleMic} title="Open Audio" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* BOTTOM: chat panel */}
-          <div className="h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col">
-            {/* Scroll area for messages */}
-            <div id="chatScroll" className="flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10">
-              {(window as any).__sharedChat?.length ? (window as any).__sharedChat.map((m: any) => (
-                <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`}>
-                    <div className="whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm">{m.text}</div>
-                    <div className="mt-0.5 text-[10px] text-white/60 text-right">{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                  </div>
-                </div>
-              )) : (
-                <div className="text-xs text-white/60 text-center py-4">No messages yet. Say hello!</div>
-              )}
-            </div>
-            {/* Composer */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                try {
-                  const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined;
-                  const text = msg.trim();
-                  if (!text) return;
-                  (window as any).__sharedChat = [
-                    ...((window as any).__sharedChat || []),
-                    { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: true, text, ts: Date.now() }
-                  ];
-                  s?.emit('sync', { type: 'chat', text });
-                  setMsg('');
-                  const box = document.getElementById('chatScroll');
-                  if (box) box.scrollTop = box.scrollHeight;
-                } catch {}
-              }}
-              className="mt-2 pb-2 flex items-center gap-2"
-            >
-              <div className="relative flex-1">
-                <input
-                  ref={msgInputRef}
-                  value={msg}
-                  onChange={(e) => setMsg(e.target.value)}
-                  placeholder="Write a message…"
-                  className="w-full pr-10 px-3 py-2 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 outline-none focus:ring-2 focus:ring-cyan-400/60"
-                />
-                <button type="button" onClick={() => setShowEmoji(v=>!v)} title="Emoji" className="absolute right-2 top-1/2 -translate-y-1/2 text-white/80 hover:text-white">😊</button>
-                {showEmoji && (
-                  <div className="absolute right-0 bottom-[110%] z-10 w-56 rounded-xl bg-white/10 backdrop-blur-md border border-white/20 p-2 shadow-xl">
-                    <div className="grid grid-cols-8 gap-1 text-lg">
-                      {['😀','😁','😂','🤣','😊','😍','😘','😎','🤩','🤗','🤔','😴','😇','🥳','👍','🙏','🔥','✨','🎉','💙','💜','💡','🎵','🎬','🕹️','⚡','🌟','🌈','☕','🍿'].map(e => (
-                        <button key={e} type="button" className="hover:scale-110 transition" onClick={() => insertEmoji(e)}>{e}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-              <button type="submit" className="h-9 px-3 rounded-xl bg-white/10 border border-white/20 hover:bg-white/15">Send</button>
-            </form>
-          </div>
-        </div>
-      </div>
+      <audio ref={audioRef} src={current?.url} preload="metadata" />
     </div>
   );
 }

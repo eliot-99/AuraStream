@@ -66,12 +66,12 @@ function App() {
     // hydrate from session
     let shared: any = null;
     try { shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null'); } catch {}
-    return <AudioPlayerShared onBack={() => { location.hash = '#/watch-together'; }} src={shared?.url} name={shared?.name} />;
+    return <AudioPlayerShared onBack={() => { location.hash = '#/shared'; }} src={shared?.url} name={shared?.name} />;
   }
   if (screen === 'video-shared') {
     let shared: any = null;
     try { shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null'); } catch {}
-    return <VideoPlayerShared onBack={() => { location.hash = '#/watch-together'; }} src={shared?.url} />;
+    return <VideoPlayerShared onBack={() => { location.hash = '#/shared'; }} src={shared?.url} />;
   }
   if (screen === 'solo') {
     return (

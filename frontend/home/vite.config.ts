@@ -4,9 +4,19 @@ import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
 
 export default defineConfig({
-  plugins: [react(), wasm(), topLevelAwait()],
+  plugins: [
+    react({
+      // Enable Fast Refresh
+      fastRefresh: true,
+      // Include .tsx files
+      include: "**/*.{jsx,tsx}",
+    }), 
+    wasm(), 
+    topLevelAwait()
+  ],
   server: {
     host: true, // listen on all interfaces for external access
+    allowedHosts: ['5d96d03b0c39.ngrok-free.app'],
     port: 5173,
     strictPort: true,
     https: false, // In real deployment, serve via HTTPS/WSS at the proxy/CDN level
@@ -14,7 +24,7 @@ export default defineConfig({
     // Stabilize HMR/WebSocket when accessed via public IP/port forwarding
     hmr: {
       protocol: 'ws',
-      host: process.env.VITE_PUBLIC_HOST || undefined, // set to your PUBLIC_IP or domain for remote clients
+      host: process.env.VITE_PUBLIC_HOST || 'localhost',
       port: 5173,
       clientPort: 5173,
     },
