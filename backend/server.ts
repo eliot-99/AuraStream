@@ -8,11 +8,13 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, URL as NodeURL } from 'url';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import net from 'net';
+import tls from 'tls';
 import { User, Room, ShareToken } from './models.js';
 import nodemailer from 'nodemailer';
 
@@ -34,9 +36,12 @@ const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: '*',
+    origin: '*', // allow all during testing to avoid transport errors across ngrok
     methods: ['GET','POST'],
-  }
+    credentials: true,
+  },
+  path: '/socket.io',
+  transports: ['websocket', 'polling']
 });
 
 // Optional: Redis adapter for multi-instance scale
@@ -78,7 +83,7 @@ function removeFromRoomState(room: string, id: string) {
 // Single Socket.IO connection handler (avoid duplicates)
 io.on('connection', (socket) => {
   let roomName: string | null = null;
-  console.log('[SOCKET][connect]', { id: socket.id, rooms: Array.from(socket.rooms || []) });
+  // [SOCKET][connect] log suppressed
 
   socket.on('handshake', (payload: any = {}) => {
     try {
@@ -113,9 +118,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('signal', (payload: any) => {
+    if (!roomName) return;
     const type = payload?.type || typeof payload;
+    // Whitelist only expected types
+    if (!['offer','answer','ice-candidate'].includes(type)) return;
     console.log('[SOCKET][signal]', { from: socket.id, room: roomName, type, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
-    if (roomName) socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
+    socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
   });
 
   socket.on('control', (payload: any) => {
@@ -154,7 +162,10 @@ io.on('connection', (socket) => {
       const count = members?.size || 0;
       io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
     }
-    console.log('[SOCKET][disconnect]', { id: socket.id, reason });
+    // Suppress noisy transport error disconnect logs
+    if (String(reason) !== 'transport error') {
+      console.log('[SOCKET][disconnect]', { id: socket.id, reason });
+    }
   });
 });
 
@@ -172,7 +183,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(rateLimit({ windowMs: 60_000, max: 120 }));
+// Trust proxy when behind ngrok/Cloud proxy so rate-limit can use X-Forwarded-For safely
+app.set('trust proxy', 1);
+app.use(rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false }));
 
 // Basic health check
 app.get('/health', (_req, res) => {
@@ -326,6 +339,80 @@ app.get('/api/webrtc/config', (_req, res) => {
   ];
   if (!iceServers.length) iceServers.push({ urls: 'stun:stun.l.google.com:19302' });
   res.json({ ok: true, iceServers });
+});
+
+// Simple TURN diagnostics. It will:
+// 1) Parse TURN_SERVER and attempt TCP/TLS connection to host:port
+// 2) Optionally attempt relay-only ICE candidate gathering using wrtc (if available)
+app.get('/api/webrtc/turn-test', async (_req, res) => {
+  const start = Date.now();
+  const server = process.env.TURN_SERVER || '';
+  const username = process.env.TURN_USERNAME || '';
+  const credential = process.env.TURN_CREDENTIAL || '';
+
+  if (!server) return res.status(200).json({ ok: false, stage: 'missing', message: 'TURN_SERVER not configured' });
+
+  let host = '';
+  let port = 3478;
+  let scheme = 'turn';
+  try {
+    // Support comma-separated urls, pick first
+    const first = (server.split(',')[0] || '').trim();
+    const u = new NodeURL(first.replace(/^turns?:\/\//, match => match));
+    scheme = first.startsWith('turns:') ? 'turns' : 'turn';
+    // If NodeURL failed (because of non-standard turn:), fallback manual parse
+    if (!u.hostname) {
+      const m = first.match(/^turns?:([^:]+):([0-9]+)/i);
+      if (m) { host = m[1]; port = Number(m[2]); }
+    } else {
+      host = u.hostname;
+      port = Number(u.port || (scheme === 'turns' ? 443 : 3478));
+    }
+  } catch {}
+
+  if (!host || !Number.isFinite(port)) {
+    return res.status(200).json({ ok: false, stage: 'parse', message: 'Failed to parse TURN_SERVER host/port', server });
+  }
+
+  // Stage 1: TCP/TLS reachability
+  const reach = await new Promise(resolve => {
+    const timeout = setTimeout(() => resolve({ ok: false, message: 'timeout' }), 4000);
+    const onDone = (val: any) => { clearTimeout(timeout); resolve(val); };
+    if (scheme === 'turns') {
+      const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => onDone({ ok: true, tlsAuthorized: socket.authorized }));
+      socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
+    } else {
+      const socket = net.createConnection({ host, port }, () => onDone({ ok: true }));
+      socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
+    }
+  });
+
+  const result: any = { ok: !!(reach as any).ok, stage: 'tcp', server, host, port, scheme, elapsedMs: Date.now() - start, reach };
+
+  // Stage 2: Optional ICE relay probe using wrtc if present
+  try {
+    // Dynamically import to avoid bundling when not installed
+    const wrtc = await import('wrtc').catch(() => null as any);
+    if (wrtc && wrtc.RTCPeerConnection) {
+      const pc: any = new wrtc.RTCPeerConnection({ iceServers: [{ urls: server, username, credential }], iceTransportPolicy: 'relay' });
+      let gotRelay = false;
+      pc.onicecandidate = (e: any) => { if (e?.candidate && / typ relay /i.test(e.candidate.candidate || '')) gotRelay = true; };
+      try { pc.addTransceiver('audio'); } catch {}
+      const offer = await pc.createOffer({ offerToReceiveAudio: true } as any);
+      await pc.setLocalDescription(offer);
+      await new Promise(r => setTimeout(r, 2500));
+      try { pc.close(); } catch {}
+      result.iceProbe = { attempted: true, relayCandidate: gotRelay };
+      if (!gotRelay) { result.ok = false; result.stage = 'ice'; result.message = 'No relay candidates gathered'; }
+    } else {
+      result.iceProbe = { attempted: false, reason: 'wrtc not available' };
+    }
+  } catch (e: any) {
+    result.iceProbe = { attempted: true, error: String(e?.message || e) };
+    result.ok = false; result.stage = 'ice';
+  }
+
+  res.status(200).json(result);
 });
 
 app.post('/api/webrtc/signal', async (req, res) => {

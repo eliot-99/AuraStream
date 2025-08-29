@@ -25,6 +25,17 @@ function formatBytes(bytes) {
 export default function SharedRoom() {
     const qs = useMemo(() => parseHashQuery(), []);
     const [room, setRoom] = useState(() => String(qs.room || sessionStorage.getItem('room') || 'demo'));
+    // Persist access token if it came via URL (opened in new tab)
+    useEffect(() => {
+        const access = qs.access;
+        const r = qs.room;
+        if (access && r) {
+            try {
+                sessionStorage.setItem(`room:${r}:access`, access);
+            }
+            catch { }
+        }
+    }, [qs]);
     const [camOn, setCamOn] = useState(false);
     const [micMuted, setMicMuted] = useState(false);
     const [chatOpen, setChatOpen] = useState(false);
@@ -38,6 +49,8 @@ export default function SharedRoom() {
     const [remoteHasVideo, setRemoteHasVideo] = useState(false);
     const [myAvatar, setMyAvatar] = useState(null);
     const [peerAvatar, setPeerAvatar] = useState(null);
+    const [turnStatus, setTurnStatus] = useState('unknown');
+    const [turnMessage, setTurnMessage] = useState(null);
     const hostLevelRef = useRef(0);
     const peerLevelRef = useRef(0);
     const micMutedRef = useRef(false);
@@ -56,12 +69,20 @@ export default function SharedRoom() {
     }, [room]);
     useEffect(() => {
         const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-        const socket = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io' });
+        const socket = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io', withCredentials: true });
         socketRef.current = socket;
         socket.on('connect', () => {
             const token = localStorage.getItem('auth');
             const accessToken = sessionStorage.getItem(`room:${room}:access`);
+            // New joiner is the polite peer by default
+            politeRef.current = true;
             socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+        });
+        socket.on('error', (err) => {
+            if (err?.error === 'access_denied') {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Access denied to room' } }));
+                setTimeout(() => { location.hash = '#/watch-together'; }, 300);
+            }
         });
         socket.on('userJoined', (payload) => {
             const selfId = socket.id;
@@ -70,6 +91,8 @@ export default function SharedRoom() {
                 setParticipants(count);
             if (payload?.id && payload.id === selfId)
                 return; // ignore our own join echo
+            // Existing member becomes impolite peer
+            politeRef.current = false;
             setPeerPresent(true);
             if (payload?.name)
                 setPeerName(payload.name);
@@ -85,24 +108,35 @@ export default function SharedRoom() {
                     sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar);
             }
             catch { }
-            maybeNegotiate('peer-joined');
+            setTimeout(() => { maybeNegotiate('peer-joined'); }, 0); // defer to ensure refs and UI settled
         });
         socket.on('signal', async (payload) => { await handleSignal(payload); });
         socket.on('control', (payload) => {
             if (!payload || typeof payload !== 'object')
                 return;
-            if (payload.type === 'toggle-mic')
-                toggleMic();
-            if (payload.type === 'toggle-cam')
-                toggleCamera();
-            if (payload.type === 'state' && typeof payload.micMuted === 'boolean')
-                setMicMuted(payload.micMuted);
-            if (payload.type === 'state' && typeof payload.camOn === 'boolean')
-                setCamOn(payload.camOn);
+            // Do not mutate local device state based on peer's state to avoid unintended UI toggles
+            // If you want remote control features, implement separate flags (e.g., remoteCamOn) instead of local camOn/micMuted
         });
         socket.on('sync', (payload) => {
             if (!payload || typeof payload !== 'object')
                 return;
+            if (payload.type === 'profile') {
+                if (payload.name) {
+                    setPeerName(payload.name);
+                    try {
+                        sessionStorage.setItem(`room:${room}:peerName`, payload.name);
+                    }
+                    catch { }
+                }
+                if (payload.avatar) {
+                    setPeerAvatar(payload.avatar);
+                    try {
+                        sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar);
+                    }
+                    catch { }
+                }
+                return;
+            }
             if (payload.type === 'chat')
                 setChat(c => [...c, { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: payload.text, ts: Date.now() }]);
             if (payload.type === 'playback') {
@@ -135,8 +169,10 @@ export default function SharedRoom() {
                 const r = await fetch(`${API_BASE}/api/webrtc/config`);
                 if (r.ok) {
                     const j = await r.json();
-                    if (j?.iceServers)
+                    if (j?.iceServers) {
                         setIceServers(j.iceServers);
+                        validateTurn(j.iceServers).catch(() => { });
+                    }
                 }
             }
             catch { }
@@ -161,6 +197,11 @@ export default function SharedRoom() {
                                 sessionStorage.setItem(`room:${room}:myAvatar`, mj.profile.avatar);
                         }
                         catch { }
+                        // Broadcast our current state so peer can render avatar/name immediately
+                        socketRef.current?.emit('control', { type: 'state', camOn, micMuted });
+                        if (mj.profile?.avatar || mj.profile?.username) {
+                            socketRef.current?.emit('sync', { type: 'profile', name: mj.profile?.username, avatar: mj.profile?.avatar });
+                        }
                     }
                 }
                 // hydrate cached peer if any
@@ -186,6 +227,50 @@ export default function SharedRoom() {
         if (box)
             box.scrollTop = box.scrollHeight;
     }, [chat]);
+    const makingOfferRef = useRef(false);
+    const ignoreOfferRef = useRef(false);
+    const politeRef = useRef(false);
+    async function validateTurn(servers) {
+        try {
+            const hasTurn = servers.some(s => Array.isArray(s.urls) ? s.urls.some(u => /^turns?:/i.test(u)) : /^turns?:/i.test(String(s.urls)));
+            if (!hasTurn) {
+                setTurnStatus('missing');
+                setTurnMessage('No TURN servers configured. Connectivity may fail on restricted networks.');
+                return;
+            }
+            const testPc = new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: 'relay' });
+            let gotRelay = false;
+            testPc.onicecandidate = (e) => {
+                if (e.candidate && / typ relay /i.test(e.candidate.candidate || '')) {
+                    gotRelay = true;
+                }
+            };
+            // Chrome requires a transceiver to start ICE gathering
+            try {
+                testPc.addTransceiver('audio');
+            }
+            catch { }
+            const offer = await testPc.createOffer({ offerToReceiveAudio: true });
+            await testPc.setLocalDescription(offer);
+            await new Promise(res => setTimeout(res, 2500));
+            try {
+                testPc.close();
+            }
+            catch { }
+            if (gotRelay) {
+                setTurnStatus('ok');
+                setTurnMessage(null);
+            }
+            else {
+                setTurnStatus('fail');
+                setTurnMessage('TURN is unreachable. Peer calls may fail behind NAT/Firewall.');
+            }
+        }
+        catch {
+            setTurnStatus('fail');
+            setTurnMessage('TURN validation failed.');
+        }
+    }
     function ensurePC() {
         if (pcRef.current)
             return pcRef.current;
@@ -193,16 +278,26 @@ export default function SharedRoom() {
         pcRef.current = pc;
         pc.onicecandidate = (e) => { if (e.candidate)
             sendSignal({ type: 'ice-candidate', candidate: e.candidate }); };
-        pc.ontrack = (e) => {
+        pc.ontrack = async (e) => {
             const [stream] = e.streams;
-            if (remoteTopRef.current && stream)
+            if (remoteTopRef.current && stream) {
                 remoteTopRef.current.srcObject = stream;
-            if (remotePanelRef.current && stream)
+                try {
+                    await remoteTopRef.current.play();
+                }
+                catch { }
+            }
+            if (remotePanelRef.current && stream) {
                 remotePanelRef.current.srcObject = stream;
-            setRemoteHasVideo(!!stream.getVideoTracks().length);
+                try {
+                    await remotePanelRef.current.play();
+                }
+                catch { }
+            }
+            setRemoteHasVideo(!!stream?.getVideoTracks?.().length);
             // Start remote audio level meter for glow (guard once per remote)
             try {
-                if (!window.__peerAnalyser) {
+                if (!window.__peerAnalyser && stream) {
                     const AC = window.AudioContext || window.webkitAudioContext;
                     const ctx = new AC();
                     const resume = () => { if (ctx.state !== 'running')
@@ -236,16 +331,14 @@ export default function SharedRoom() {
         pc.onconnectionstatechange = () => { if (pc.connectionState === 'connected')
             startBitrateMonitor(); };
         pc.onnegotiationneeded = async () => {
-            if (isNegotiatingRef.current)
-                return;
-            isNegotiatingRef.current = true;
             try {
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                sendSignal({ type: 'offer', sdp: offer.sdp });
+                makingOfferRef.current = true;
+                await pc.setLocalDescription(await pc.createOffer());
+                sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
             }
+            catch { }
             finally {
-                setTimeout(() => { isNegotiatingRef.current = false; }, 500);
+                makingOfferRef.current = false;
             }
         };
         return pc;
@@ -267,14 +360,25 @@ export default function SharedRoom() {
         if (!payload || typeof payload !== 'object')
             return;
         if (payload.type === 'offer') {
-            await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            sendSignal({ type: 'answer', sdp: answer.sdp });
+            const offer = { type: 'offer', sdp: payload.sdp };
+            const readyForOffer = !makingOfferRef.current && (pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer');
+            ignoreOfferRef.current = !readyForOffer && !politeRef.current;
+            if (ignoreOfferRef.current)
+                return;
+            try {
+                await pc.setRemoteDescription(offer);
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                sendSignal({ type: 'answer', sdp: answer.sdp });
+            }
+            catch { }
             return;
         }
         if (payload.type === 'answer') {
-            await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
+            try {
+                await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
+            }
+            catch { }
             return;
         }
         if (payload.type === 'ice-candidate' && payload.candidate) {
@@ -285,12 +389,19 @@ export default function SharedRoom() {
         }
     }
     function sendSignal(payload) {
-        const senderId = socketRef.current?.id;
-        fetch('/api/webrtc/signal', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ room, payload, senderId })
-        }).catch(() => { });
+        const socket = socketRef.current;
+        if (socket && socket.connected) {
+            socket.emit('signal', payload);
+        }
+        else {
+            // Fallback via HTTP (rare)
+            const senderId = socketRef.current?.id;
+            fetch('/api/webrtc/signal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ room, payload, senderId })
+            }).catch(() => { });
+        }
     }
     async function maybeNegotiate(_reason) { ensurePC(); }
     async function toggleCamera() {
@@ -539,7 +650,7 @@ export default function SharedRoom() {
         });
         setShowEmoji(false);
     };
-    return (_jsxs("div", { className: "relative min-h-screen overflow-hidden font-montserrat", children: [_jsx("div", { className: "absolute inset-0 -z-20", children: _jsx(RippleGrid, { enableRainbow: true, gridColor: "#8ab4ff", rippleIntensity: 0.06, gridSize: 10, gridThickness: 12, fadeDistance: 1.6, vignetteStrength: 1.8, glowIntensity: 0.12, opacity: 0.6, gridRotation: 0, mouseInteraction: true, mouseInteractionRadius: 0.8 }) }), _jsx("div", { className: "absolute top-4 left-4 z-20 flex items-center gap-2", children: _jsx("button", { onClick: () => (window.location.hash = '#/home'), "aria-label": "Back", title: "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", width: "18", height: "18", fill: "currentColor", "aria-hidden": "true", className: "text-white", children: _jsx("polygon", { points: "15,4 5,12 15,20" }) }) }) }), _jsx("main", { className: "relative z-10 min-h-screen flex items-center justify-center p-6", children: _jsxs(StarBorder, { as: "div", className: "max-w-[64rem] w-[92vw] text-center", color: "#88ccff", speed: "8s", thickness: 2, children: [_jsx("div", { className: "py-4", children: _jsx("div", { className: "w-full max-w-[52rem] mx-auto", children: _jsx(TextPressure, { text: "Shared Room", className: "select-none", fontFamily: "Compressa VF", fontUrl: "https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2", width: true, weight: true, italic: true, alpha: false, flex: false, stroke: false, scale: false, textColor: "#ffffff", minFontSize: 40 }) }) }), _jsxs("div", { className: "mt-2 text-white/80 text-sm", children: ["Room: ", _jsx("span", { className: "text-white font-semibold", children: room }), " \u2022 Participants: ", participants] }), _jsxs("div", { className: "mt-6 flex items-center justify-center gap-28", children: [_jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30", children: [_jsx("video", { ref: localTopRef, className: "h-full w-full object-cover", playsInline: true, muted: true, style: { display: camOn ? 'block' : 'none' } }), !camOn && (myAvatar ? _jsx("img", { src: myAvatar, alt: "Me", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "host-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-cyan-400/80", style: { opacity: 0.5, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[11rem] truncate", children: myName })] }), _jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30", children: [_jsx("video", { ref: remoteTopRef, className: "h-full w-full object-cover", playsInline: true, style: { display: remoteHasVideo ? 'block' : 'none' } }), !peerPresent && (_jsx("div", { className: "absolute inset-0 flex items-center justify-center", children: _jsxs("div", { className: "flex items-end gap-1", children: [_jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '0ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '120ms' } }), _jsx("div", { className: "w-2 h-9 bg-pink-500 rounded animate-bounce", style: { animationDelay: '240ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '360ms' } }), _jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '480ms' } })] }) })), peerPresent && !remoteHasVideo && (peerAvatar ? _jsx("img", { src: peerAvatar, alt: "Peer", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "peer-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-pink-400/80", style: { opacity: 0.45, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[18rem]", children: peerPresent ? (_jsx("span", { className: "truncate inline-block max-w-full align-middle", children: peerName || '' })) : (_jsxs("span", { className: "inline-flex items-center", children: [_jsx("span", { className: "align-middle", children: "Waiting for peer" }), _jsxs("span", { className: "ml-1 inline-flex items-center", children: [_jsx("span", { className: "w-1.5 h-1.5 bg-white/80 rounded-full animate-bounce", style: { animationDelay: '0ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce ml-1", style: { animationDelay: '150ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/60 rounded-full animate-bounce ml-1", style: { animationDelay: '300ms' } })] })] })) })] })] }), _jsxs("div", { className: "mt-8 flex items-center justify-center gap-3 flex-wrap", children: [_jsx("button", { onClick: toggleCamera, "aria-label": "Open Video", title: "Open Video", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, "aria-label": "Open Audio", title: "Open Audio", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) }), _jsx("button", { onClick: () => setChatOpen(v => !v), "aria-label": "Open Messages", title: "Open Messages", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z" }) }) }), _jsx("button", { onClick: chooseMedia, "aria-label": "Choose Media to Stream", title: "Choose Media to Stream", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z" }) }) }), _jsx("button", { onClick: endRoom, "aria-label": "End Room", title: "End Room", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-red-400/60 hover:scale-110 transition text-red-300 flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2V8h2zm0-8h-2V6h2z" }) }) })] }), chatOpen && (_jsxs("div", { className: "mt-8 mx-auto max-w-2xl w-full rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-0 text-white shadow-2xl overflow-hidden", children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 bg-gradient-to-r from-cyan-500/15 via-transparent to-pink-500/15 border-b border-white/10", children: [_jsxs("div", { className: "text-sm text-white/90 flex items-center gap-2", children: [_jsx("span", { className: "inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" }), "Messages"] }), _jsx("div", { className: "text-xs text-white/70", children: peerPresent ? 'Connected' : 'Waiting for peer…' })] }), _jsxs("div", { id: "chatScroll", className: "h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03]", children: [chat.map(m => (_jsxs("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: [!m.fromSelf && _jsx("div", { className: "mr-2 w-6 h-6 rounded-full bg-pink-400/40 border border-pink-300/40 flex items-center justify-center text-xs", children: "\uD83D\uDC64" }), _jsxs("div", { className: `max-w-[78%] rounded-2xl px-4 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed", children: m.text }), _jsx("div", { className: "mt-1 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }), m.fromSelf && _jsx("div", { className: "ml-2 w-6 h-6 rounded-full bg-cyan-400/40 border border-cyan-300/40 flex items-center justify-center text-xs", children: "\uD83E\uDDD1" })] }, m.id))), chat.length === 0 && (_jsx("div", { className: "text-xs text-white/60 text-center py-6", children: "No messages yet. Say hello!" }))] }), _jsxs("div", { className: "px-4 py-3 bg-gradient-to-r from-cyan-500/10 via-transparent to-pink-500/10 border-t border-white/10 flex items-center gap-3", children: [_jsxs("div", { className: "relative flex-1", children: [_jsx("input", { ref: msgInputRef, value: msg, onChange: e => setMsg(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey) {
+    return (_jsxs("div", { className: "relative min-h-screen overflow-hidden font-montserrat", children: [_jsx("div", { className: "absolute inset-0 -z-20", children: _jsx(RippleGrid, { enableRainbow: true, gridColor: "#8ab4ff", rippleIntensity: 0.06, gridSize: 10, gridThickness: 12, fadeDistance: 1.6, vignetteStrength: 1.8, glowIntensity: 0.12, opacity: 0.6, gridRotation: 0, mouseInteraction: true, mouseInteractionRadius: 0.8 }) }), _jsx("div", { className: "absolute top-4 left-4 z-20 flex items-center gap-2", children: _jsx("button", { onClick: () => (window.location.hash = '#/home'), "aria-label": "Back", title: "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", width: "18", height: "18", fill: "currentColor", "aria-hidden": "true", className: "text-white", children: _jsx("polygon", { points: "15,4 5,12 15,20" }) }) }) }), _jsx("main", { className: "relative z-10 min-h-screen flex items-center justify-center p-6", children: _jsxs(StarBorder, { as: "div", className: "max-w-[64rem] w-[92vw] text-center", color: "#88ccff", speed: "8s", thickness: 2, children: [_jsx("div", { className: "py-4", children: _jsx("div", { className: "w-full max-w-[52rem] mx-auto", children: _jsx(TextPressure, { text: "Shared Room", className: "select-none", fontFamily: "Compressa VF", fontUrl: "https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2", width: true, weight: true, italic: true, alpha: false, flex: false, stroke: false, scale: false, textColor: "#ffffff", minFontSize: 40 }) }) }), turnStatus !== 'ok' && turnStatus !== 'unknown' && (_jsx("div", { className: `mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border ${turnStatus === 'missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`, role: "alert", children: turnMessage })), _jsxs("div", { className: "mt-2 text-white/80 text-sm", children: ["Room: ", _jsx("span", { className: "text-white font-semibold", children: room }), " \u2022 Participants: ", participants] }), _jsxs("div", { className: "mt-6 flex items-center justify-center gap-28", children: [_jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30", children: [_jsx("video", { ref: localTopRef, className: "h-full w-full object-cover", playsInline: true, muted: true, style: { display: camOn ? 'block' : 'none' } }), !camOn && (myAvatar ? _jsx("img", { src: myAvatar, alt: "Me", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "host-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-cyan-400/80", style: { opacity: 0.5, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[11rem] truncate", children: myName })] }), _jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30", children: [_jsx("video", { ref: remoteTopRef, className: "h-full w-full object-cover", playsInline: true, style: { display: remoteHasVideo ? 'block' : 'none' } }), !peerPresent && (_jsx("div", { className: "absolute inset-0 flex items-center justify-center", children: _jsxs("div", { className: "flex items-end gap-1", children: [_jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '0ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '120ms' } }), _jsx("div", { className: "w-2 h-9 bg-pink-500 rounded animate-bounce", style: { animationDelay: '240ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '360ms' } }), _jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '480ms' } })] }) })), peerPresent && !remoteHasVideo && (peerAvatar ? _jsx("img", { src: peerAvatar, alt: "Peer", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "peer-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-pink-400/80", style: { opacity: 0.45, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[18rem]", children: peerPresent ? (_jsx("span", { className: "truncate inline-block max-w-full align-middle", children: peerName || '' })) : (_jsxs("span", { className: "inline-flex items-center", children: [_jsx("span", { className: "align-middle", children: "Waiting for peer" }), _jsxs("span", { className: "ml-1 inline-flex items-center", children: [_jsx("span", { className: "w-1.5 h-1.5 bg-white/80 rounded-full animate-bounce", style: { animationDelay: '0ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce ml-1", style: { animationDelay: '150ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/60 rounded-full animate-bounce ml-1", style: { animationDelay: '300ms' } })] })] })) })] })] }), _jsxs("div", { className: "mt-8 flex items-center justify-center gap-3 flex-wrap", children: [_jsx("button", { onClick: toggleCamera, "aria-label": "Open Video", title: "Open Video", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, "aria-label": "Open Audio", title: "Open Audio", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) }), _jsx("button", { onClick: () => setChatOpen(v => !v), "aria-label": "Open Messages", title: "Open Messages", className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z" }) }) }), _jsx("button", { onClick: chooseMedia, "aria-label": "Choose Media to Stream", title: "Choose Media to Stream", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z" }) }) }), _jsx("button", { onClick: endRoom, "aria-label": "End Room", title: "End Room", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-red-400/60 hover:scale-110 transition text-red-300 flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2V8h2zm0-8h-2V6h2z" }) }) })] }), chatOpen && (_jsxs("div", { className: "mt-8 mx-auto max-w-2xl w-full rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-0 text-white shadow-2xl overflow-hidden", children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 bg-gradient-to-r from-cyan-500/15 via-transparent to-pink-500/15 border-b border-white/10", children: [_jsxs("div", { className: "text-sm text-white/90 flex items-center gap-2", children: [_jsx("span", { className: "inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" }), "Messages"] }), _jsx("div", { className: "text-xs text-white/70", children: peerPresent ? 'Connected' : 'Waiting for peer…' })] }), _jsxs("div", { id: "chatScroll", className: "h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03]", children: [chat.map(m => (_jsxs("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: [!m.fromSelf && _jsx("div", { className: "mr-2 w-6 h-6 rounded-full bg-pink-400/40 border border-pink-300/40 flex items-center justify-center text-xs", children: "\uD83D\uDC64" }), _jsxs("div", { className: `max-w-[78%] rounded-2xl px-4 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed", children: m.text }), _jsx("div", { className: "mt-1 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }), m.fromSelf && _jsx("div", { className: "ml-2 w-6 h-6 rounded-full bg-cyan-400/40 border border-cyan-300/40 flex items-center justify-center text-xs", children: "\uD83E\uDDD1" })] }, m.id))), chat.length === 0 && (_jsx("div", { className: "text-xs text-white/60 text-center py-6", children: "No messages yet. Say hello!" }))] }), _jsxs("div", { className: "px-4 py-3 bg-gradient-to-r from-cyan-500/10 via-transparent to-pink-500/10 border-t border-white/10 flex items-center gap-3", children: [_jsxs("div", { className: "relative flex-1", children: [_jsx("input", { ref: msgInputRef, value: msg, onChange: e => setMsg(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey) {
                                                         e.preventDefault();
                                                         if (msg.trim()) {
                                                             sendChat(msg.trim());

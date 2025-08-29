@@ -27,6 +27,14 @@ type ChatMsg = { id: string; fromSelf: boolean; text: string; ts: number };
 export default function SharedRoom() {
   const qs = useMemo(() => parseHashQuery(), []);
   const [room, setRoom] = useState<string>(() => String((qs as any).room || sessionStorage.getItem('room') || 'demo'));
+  // Persist access token if it came via URL (opened in new tab)
+  useEffect(() => {
+    const access = (qs as any).access as string | undefined;
+    const r = (qs as any).room as string | undefined;
+    if (access && r) {
+      try { sessionStorage.setItem(`room:${r}:access`, access); } catch {}
+    }
+  }, [qs]);
 
   const [camOn, setCamOn] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
@@ -41,6 +49,8 @@ export default function SharedRoom() {
   const [remoteHasVideo, setRemoteHasVideo] = useState<boolean>(false);
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
+  const [turnStatus, setTurnStatus] = useState<'unknown'|'ok'|'fail'|'missing'>('unknown');
+  const [turnMessage, setTurnMessage] = useState<string | null>(null);
   const hostLevelRef = useRef(0);
   const peerLevelRef = useRef(0);
   const micMutedRef = useRef(false);
@@ -62,13 +72,22 @@ export default function SharedRoom() {
 
   useEffect(() => {
     const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io' });
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       const token = localStorage.getItem('auth');
       const accessToken = sessionStorage.getItem(`room:${room}:access`);
+      // New joiner is the polite peer by default
+      politeRef.current = true;
       socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+    });
+
+    socket.on('error', (err: any) => {
+      if (err?.error === 'access_denied') {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Access denied to room' } }));
+        setTimeout(()=>{ location.hash = '#/watch-together'; }, 300);
+      }
     });
 
     socket.on('userJoined', (payload: any) => {
@@ -76,26 +95,31 @@ export default function SharedRoom() {
       const count = typeof payload?.count === 'number' ? payload.count : undefined;
       if (count !== undefined) setParticipants(count);
       if (payload?.id && payload.id === selfId) return; // ignore our own join echo
+      // Existing member becomes impolite peer
+      politeRef.current = false;
       setPeerPresent(true);
       if (payload?.name) setPeerName(payload.name);
       if (payload?.avatar) setPeerAvatar(payload.avatar);
       try { if (payload?.name) sessionStorage.setItem(`room:${room}:peerName`, payload.name); } catch {}
       try { if (payload?.avatar) sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar); } catch {}
-      maybeNegotiate('peer-joined');
+      setTimeout(()=>{ maybeNegotiate('peer-joined'); }, 0); // defer to ensure refs and UI settled
     });
 
     socket.on('signal', async (payload: any) => { await handleSignal(payload); });
 
     socket.on('control', (payload: any) => {
       if (!payload || typeof payload !== 'object') return;
-      if (payload.type === 'toggle-mic') toggleMic();
-      if (payload.type === 'toggle-cam') toggleCamera();
-      if (payload.type === 'state' && typeof payload.micMuted === 'boolean') setMicMuted(payload.micMuted);
-      if (payload.type === 'state' && typeof payload.camOn === 'boolean') setCamOn(payload.camOn);
+      // Do not mutate local device state based on peer's state to avoid unintended UI toggles
+      // If you want remote control features, implement separate flags (e.g., remoteCamOn) instead of local camOn/micMuted
     });
 
     socket.on('sync', (payload: any) => {
       if (!payload || typeof payload !== 'object') return;
+      if (payload.type === 'profile') {
+        if (payload.name) { setPeerName(payload.name); try { sessionStorage.setItem(`room:${room}:peerName`, payload.name); } catch {} }
+        if (payload.avatar) { setPeerAvatar(payload.avatar); try { sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar); } catch {} }
+        return;
+      }
       if (payload.type === 'chat') setChat(c => [...c, { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: payload.text, ts: Date.now() }]);
       if (payload.type === 'playback') {
         const v = remoteTopRef.current || remotePanelRef.current; if (!v) return;
@@ -120,7 +144,13 @@ export default function SharedRoom() {
     try {
       const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
       const r = await fetch(`${API_BASE}/api/webrtc/config`);
-      if (r.ok) { const j = await r.json(); if (j?.iceServers) setIceServers(j.iceServers); }
+      if (r.ok) {
+        const j = await r.json();
+        if (j?.iceServers) {
+          setIceServers(j.iceServers);
+          validateTurn(j.iceServers).catch(()=>{});
+        }
+      }
     } catch {}
     try {
       const token = localStorage.getItem('auth');
@@ -134,6 +164,11 @@ export default function SharedRoom() {
           if (mj.profile?.avatar) setMyAvatar(mj.profile.avatar);
           try { sessionStorage.setItem(`room:${room}:myName`, mj.profile?.username || 'You'); } catch {}
           try { if (mj.profile?.avatar) sessionStorage.setItem(`room:${room}:myAvatar`, mj.profile.avatar); } catch {}
+          // Broadcast our current state so peer can render avatar/name immediately
+          socketRef.current?.emit('control', { type: 'state', camOn, micMuted });
+          if (mj.profile?.avatar || mj.profile?.username) {
+            socketRef.current?.emit('sync', { type: 'profile', name: mj.profile?.username, avatar: mj.profile?.avatar });
+          }
         }
       }
       // hydrate cached peer if any
@@ -148,15 +183,53 @@ export default function SharedRoom() {
     if (box) box.scrollTop = box.scrollHeight;
   }, [chat]);
 
+  const makingOfferRef = useRef(false);
+  const ignoreOfferRef = useRef(false);
+  const politeRef = useRef(false);
+
+  async function validateTurn(servers: IceServer[]) {
+    try {
+      const hasTurn = servers.some(s => Array.isArray(s.urls) ? s.urls.some(u=>/^turns?:/i.test(u)) : /^turns?:/i.test(String(s.urls)));
+      if (!hasTurn) { setTurnStatus('missing'); setTurnMessage('No TURN servers configured. Connectivity may fail on restricted networks.'); return; }
+      const testPc = new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: 'relay' as any });
+      let gotRelay = false;
+      testPc.onicecandidate = (e) => {
+        if (e.candidate && / typ relay /i.test(e.candidate.candidate || '')) { gotRelay = true; }
+      };
+      // Chrome requires a transceiver to start ICE gathering
+      try { testPc.addTransceiver('audio'); } catch {}
+      const offer = await testPc.createOffer({ offerToReceiveAudio: true });
+      await testPc.setLocalDescription(offer);
+      await new Promise(res => setTimeout(res, 2500));
+      try { testPc.close(); } catch {}
+      if (gotRelay) { setTurnStatus('ok'); setTurnMessage(null); }
+      else { setTurnStatus('fail'); setTurnMessage('TURN is unreachable. Peer calls may fail behind NAT/Firewall.'); }
+    } catch {
+      setTurnStatus('fail'); setTurnMessage('TURN validation failed.');
+    }
+  }
+
   function ensurePC() {
     if (pcRef.current) return pcRef.current;
     const pc = new RTCPeerConnection({ iceServers });
     pcRef.current = pc;
+
     pc.onicecandidate = (e) => { if (e.candidate) sendSignal({ type: 'ice-candidate', candidate: e.candidate }); };
-    pc.ontrack = (e) => { const [stream] = e.streams; if (remoteTopRef.current && stream) remoteTopRef.current.srcObject = stream; if (remotePanelRef.current && stream) remotePanelRef.current.srcObject = stream; setRemoteHasVideo(!!stream.getVideoTracks().length);
+
+    pc.ontrack = async (e) => {
+      const [stream] = e.streams;
+      if (remoteTopRef.current && stream) {
+        remoteTopRef.current.srcObject = stream;
+        try { await remoteTopRef.current.play(); } catch {}
+      }
+      if (remotePanelRef.current && stream) {
+        remotePanelRef.current.srcObject = stream;
+        try { await remotePanelRef.current.play(); } catch {}
+      }
+      setRemoteHasVideo(!!stream?.getVideoTracks?.().length);
       // Start remote audio level meter for glow (guard once per remote)
       try {
-        if (!(window as any).__peerAnalyser) {
+        if (!(window as any).__peerAnalyser && stream) {
           const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
           const ctx = new AC();
           const resume = () => { if (ctx.state !== 'running') ctx.resume().catch(()=>{}); window.removeEventListener('click', resume); };
@@ -180,11 +253,16 @@ export default function SharedRoom() {
         }
       } catch {}
     };
+
     pc.onconnectionstatechange = () => { if (pc.connectionState === 'connected') startBitrateMonitor(); };
+
     pc.onnegotiationneeded = async () => {
-      if (isNegotiatingRef.current) return; isNegotiatingRef.current = true;
-      try { const offer = await pc.createOffer(); await pc.setLocalDescription(offer); sendSignal({ type: 'offer', sdp: offer.sdp }); }
-      finally { setTimeout(()=>{ isNegotiatingRef.current = false; }, 500); }
+      try {
+        makingOfferRef.current = true;
+        await pc.setLocalDescription(await pc.createOffer());
+        sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
+      } catch {}
+      finally { makingOfferRef.current = false; }
     };
     return pc;
   }
@@ -196,18 +274,44 @@ export default function SharedRoom() {
 
   async function handleSignal(payload: any) {
     const pc = ensurePC(); if (!payload || typeof payload !== 'object') return;
-    if (payload.type === 'offer') { await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp }); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); sendSignal({ type: 'answer', sdp: answer.sdp }); return; }
-    if (payload.type === 'answer') { await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp }); return; }
-    if (payload.type === 'ice-candidate' && payload.candidate) { try { await pc.addIceCandidate(payload.candidate); } catch {} }
+
+    if (payload.type === 'offer') {
+      const offer = { type: 'offer' as const, sdp: payload.sdp };
+      const readyForOffer = !makingOfferRef.current && (pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer');
+      ignoreOfferRef.current = !readyForOffer && !politeRef.current;
+      if (ignoreOfferRef.current) return;
+      try {
+        await pc.setRemoteDescription(offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        sendSignal({ type: 'answer', sdp: answer.sdp });
+      } catch {}
+      return;
+    }
+
+    if (payload.type === 'answer') {
+      try { await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp }); } catch {}
+      return;
+    }
+
+    if (payload.type === 'ice-candidate' && payload.candidate) {
+      try { await pc.addIceCandidate(payload.candidate); } catch {}
+    }
   }
 
   function sendSignal(payload: any) {
-    const senderId = socketRef.current?.id;
-    fetch('/api/webrtc/signal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room, payload, senderId })
-    }).catch(()=>{});
+    const socket = socketRef.current;
+    if (socket && socket.connected) {
+      socket.emit('signal', payload);
+    } else {
+      // Fallback via HTTP (rare)
+      const senderId = socketRef.current?.id;
+      fetch('/api/webrtc/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room, payload, senderId })
+      }).catch(()=>{});
+    }
   }
 
   async function maybeNegotiate(_reason: string) { ensurePC(); }
@@ -399,6 +503,13 @@ export default function SharedRoom() {
               <TextPressure text="Shared Room" className="select-none" fontFamily="Compressa VF" fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2" width weight italic alpha={false} flex={false} stroke={false} scale={false} textColor="#ffffff" minFontSize={40} />
             </div>
           </div>
+
+          {turnStatus !== 'ok' && turnStatus !== 'unknown' && (
+            <div className={`mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border ${turnStatus==='missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`}
+                 role="alert">
+              {turnMessage}
+            </div>
+          )}
 
           {/* Room header under title, inside the rectangle */}
           <div className="mt-2 text-white/80 text-sm">Room: <span className="text-white font-semibold">{room}</span> • Participants: {participants}</div>

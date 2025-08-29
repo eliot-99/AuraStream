@@ -16,7 +16,10 @@ export default defineConfig({
   ],
   server: {
     host: true, // listen on all interfaces for external access
-    allowedHosts: ['5d96d03b0c39.ngrok-free.app'],
+    allowedHosts: [
+      '5d96d03b0c39.ngrok-free.app',
+      '5b8c4e6be904.ngrok-free.app'
+    ],
     port: 5173,
     strictPort: true,
     https: false, // In real deployment, serve via HTTPS/WSS at the proxy/CDN level

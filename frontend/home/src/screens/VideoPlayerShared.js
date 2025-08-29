@@ -358,7 +358,17 @@ export default function VideoPlayer({ onBack, src }) {
         v.addEventListener('timeupdate', onTime);
         v.addEventListener('loadedmetadata', onLoaded);
         v.addEventListener('ended', () => setPlaying(false));
-        return () => { v.removeEventListener('timeupdate', onTime); v.removeEventListener('loadedmetadata', onLoaded); };
+        return () => {
+            v.removeEventListener('timeupdate', onTime);
+            v.removeEventListener('loadedmetadata', onLoaded);
+            // Stop media if component unmounts to avoid background playback
+            try {
+                v.pause();
+                v.removeAttribute('src');
+                v.load();
+            }
+            catch { }
+        };
     }, []);
     const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
     // Controls
@@ -366,12 +376,37 @@ export default function VideoPlayer({ onBack, src }) {
         const v = videoRef.current;
         try {
             if (v.paused) {
+                // Pause any other media elements to prevent duplicate playback
+                try {
+                    const nodes = Array.from(document.querySelectorAll('audio, video'));
+                    nodes.forEach(n => { if (n !== v) {
+                        try {
+                            n.pause();
+                        }
+                        catch { }
+                        ;
+                        try {
+                            n.srcObject = null;
+                        }
+                        catch { }
+                        ;
+                    } });
+                }
+                catch { }
                 await v.play();
                 setPlaying(true);
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+                }
+                catch { }
             }
             else {
                 v.pause();
                 setPlaying(false);
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'pause' });
+                }
+                catch { }
             }
         }
         catch { }
@@ -391,6 +426,25 @@ export default function VideoPlayer({ onBack, src }) {
     }
     catch { } };
     const toggleFS = () => (document.fullscreenElement ? exitFS() : enterFS());
+    // Stop and clear video (and decoy) to avoid background playback
+    const stopAll = () => {
+        try {
+            const v = videoRef.current;
+            const d = decoyRef.current;
+            if (v) {
+                v.pause();
+                v.removeAttribute('src');
+                v.load();
+            }
+            if (d) {
+                d.pause();
+                d.removeAttribute('src');
+                d.load();
+            }
+            setPlaying(false);
+        }
+        catch { }
+    };
     // Subtitle toggling and track switching
     const refreshTracksState = () => {
         const v = videoRef.current;
@@ -489,6 +543,10 @@ export default function VideoPlayer({ onBack, src }) {
             }
         };
         const onPlay = () => {
+            try {
+                window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+            }
+            catch { }
             if (!decoy)
                 return;
             try {
@@ -506,10 +564,17 @@ export default function VideoPlayer({ onBack, src }) {
             catch { }
         };
         const onPause = () => { try {
+            window.sharedSocket?.emit('sync', { type: 'playback', action: 'pause' });
+        }
+        catch { } ; try {
             decoy?.pause();
         }
         catch { } };
         const onSeeked = () => {
+            try {
+                window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime });
+            }
+            catch { }
             if (!decoy)
                 return;
             try {
@@ -533,6 +598,27 @@ export default function VideoPlayer({ onBack, src }) {
         v.addEventListener('seeked', onSeeked);
         v.addEventListener('ratechange', onRateChange);
         v.addEventListener('ended', onEnded);
+        // Bind socket sync listener once for video
+        try {
+            const s = window.sharedSocket;
+            if (s && !s.__videoSyncBound) {
+                s.__videoSyncBound = true;
+                s.on?.('sync', (payload) => {
+                    try {
+                        if (!payload || payload.type !== 'playback')
+                            return;
+                        if (payload.action === 'play')
+                            v.play().catch(() => { });
+                        if (payload.action === 'pause')
+                            v.pause();
+                        if (payload.action === 'seek' && typeof payload.time === 'number')
+                            v.currentTime = payload.time;
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch { }
         return () => {
             v.removeEventListener('loadedmetadata', onLoadedMeta);
             v.removeEventListener('play', onPlay);
@@ -544,9 +630,15 @@ export default function VideoPlayer({ onBack, src }) {
     }, [subsEnabled]);
     const TransportIcon = playing ? Icon.Pause : Icon.Play;
     return (_jsxs("div", { className: "relative min-h-screen text-white font-montserrat overflow-hidden", children: [_jsx("video", { ref: decoyRef, className: "pointer-events-none fixed inset-0 w-full h-full object-cover filter blur-[50px] scale-[2_1.5] opacity-60 z-0", muted: true, playsInline: true, preload: "auto", "aria-hidden": "true" }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between", children: [_jsx("button", { onClick: () => { try {
+                            stopAll();
                             location.hash = '#/shared';
                         }
                         catch {
+                            try {
+                                stopAll();
+                            }
+                            catch { }
+                            ;
                             (onBack ? onBack() : window.history.back());
                         } }, className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", "aria-label": "Back", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: !showDrawer && (_jsx("button", { onClick: () => setShowDrawer(true), "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) })) })] }), _jsxs("main", { className: "relative z-10 min-h-screen w-full p-0", children: [_jsx("div", { className: "absolute inset-0", children: _jsx("div", { className: "absolute inset-0 flex items-center justify-center px-4 pt-6 pb-28", children: _jsx("div", { className: "relative inline-flex rounded-2xl overflow-hidden shadow-2xl max-w-[92vw]", style: { width: box.w || undefined, height: box.h || undefined, boxShadow: `0 0 40px ${bgColor.replace('rgb', 'rgba').replace(')', ', 0.35)')}` }, children: _jsx("video", { ref: videoRef, controls: false, className: `relative z-10 block w-full h-full ${aspect > 1.72 && aspect < 1.82 ? 'object-cover' : 'object-contain'} bg-black`, playsInline: true, preload: "metadata", onPlay: async () => { try {
                                         const ctx = audioCtxRef.current;

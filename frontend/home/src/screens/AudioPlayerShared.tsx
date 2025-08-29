@@ -242,6 +242,8 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
   // Toggle camera: when on, replace avatar with local video
   const toggleCam = async () => {
     try {
+      // Pause audio playback when turning cam on to avoid mixed media
+      if (!camOn) { try { const a = audioRef.current; if (a && !a.paused) a.pause(); } catch {} }
       if (!camOn) {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: !micUiMuted });
         localStreamRef.current = stream;
@@ -403,8 +405,14 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     const start = async () => {
       try {
         await ensureAudioReady();
+        // Pause any other media elements in the page to avoid double playback
+        try {
+          const nodes = Array.from(document.querySelectorAll('audio, video')) as HTMLMediaElement[];
+          nodes.forEach(n => { if (n !== a) { try { n.pause(); } catch {}; try { (n as any).srcObject = null; } catch {}; }});
+        } catch {}
         await a.play();
         setPlaying(true);
+        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
       } catch {}
     };
     start();
@@ -493,11 +501,31 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     if (ctx && ctx.state !== 'running') {
       try { await ctx.resume(); } catch {}
     }
+    // Listen for cross-page playback sync if socket is available
+    try {
+      const s: any = (window as any).sharedSocket;
+      if (s && !(s as any).__audioSyncBound) {
+        (s as any).__audioSyncBound = true;
+        s.on?.('sync', (payload: any) => {
+          try {
+            if (!payload || payload.type !== 'playback') return;
+            const a = audioRef.current; if (!a) return;
+            if (payload.action === 'play') a.play().catch(()=>{});
+            if (payload.action === 'pause') a.pause();
+            if (payload.action === 'seek' && typeof payload.time === 'number') a.currentTime = payload.time;
+          } catch {}
+        });
+      }
+    } catch {}
   };
 
   // Cleanup only on unmount (keep audio graph across track changes)
   useEffect(() => {
     return () => {
+      // Stop local audio element to prevent background playback
+      try {
+        const a = audioRef.current; if (a) { a.pause(); a.removeAttribute('src'); a.load(); }
+      } catch {}
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       try {
         sourceRef.current?.disconnect();
@@ -536,8 +564,15 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     try {
       await ensureAudioReady();
       const a = audioRef.current!;
-      if (a.paused) { await a.play(); setPlaying(true); }
-      else { a.pause(); setPlaying(false); }
+      if (a.paused) {
+        // Pause other media first
+        try { Array.from(document.querySelectorAll('video')).forEach(v => { try { v.pause(); } catch {}; }); } catch {}
+        await a.play(); setPlaying(true);
+        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
+      } else {
+        a.pause(); setPlaying(false);
+        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}
+      }
     } catch (e: any) {
       setError(e?.message || 'Playback failed');
     }
@@ -545,7 +580,9 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
 
   const handleSeek = (t: number) => {
     const a = audioRef.current; if (!a) return;
-    a.currentTime = Math.max(0, Math.min(a.duration || t, t));
+    const nt = Math.max(0, Math.min(a.duration || t, t));
+    a.currentTime = nt;
+    try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); } catch {}
   };
 
   const handleSkip = (delta: number) => {
@@ -554,6 +591,47 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
   };
 
 
+
+  // Socket setup + avatars (reuse SharedRoom room + handshake)
+  useEffect(() => {
+    try {
+      const room = sessionStorage.getItem('room') || 'demo';
+      const me = sessionStorage.getItem(`room:${room}:myAvatar`);
+      const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
+      const myN = sessionStorage.getItem(`room:${room}:myName`);
+      const peerN = sessionStorage.getItem(`room:${room}:peerName`);
+      if (me) setMyAvatar(me);
+      if (peer) setPeerAvatar(peer);
+      if (myN) setMyName(myN);
+      if (peerN) setPeerName(peerN);
+    } catch {}
+
+    try {
+      if (!(window as any).sharedSocket) {
+        const { io } = require('socket.io-client');
+        const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        const s = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io' });
+        ;(window as any).sharedSocket = s;
+        s.on('connect', () => {
+          const room = sessionStorage.getItem('room') || 'demo';
+          s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+        });
+        s.on('control', (payload: any) => {
+          if (payload?.type === 'state') {
+            if (typeof payload.micMuted === 'boolean') setMicUiMuted(payload.micMuted);
+            if (typeof payload.camOn === 'boolean') setCamOn(payload.camOn);
+          }
+        });
+        s.on('sync', (payload: any) => {
+          try {
+            if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+              setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+            }
+          } catch {}
+        });
+      }
+    } catch {}
+  }, []);
 
   // Derived labels
   const title = useMemo(() => currentTrack?.name || 'Audio', [currentTrack]);
@@ -646,7 +724,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between">
         <button
-          onClick={() => (onBack ? onBack() : window.history.back())}
+          onClick={() => { try { const a = audioRef.current; if (a) { a.pause(); a.removeAttribute('src'); a.load(); } } catch {}; (onBack ? onBack() : window.history.back()); }}
           aria-label="Back"
           className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition"
         >

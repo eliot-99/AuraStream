@@ -236,6 +236,15 @@ export default function AudioPlayerShared({ onBack, src, name }) {
     // Toggle camera: when on, replace avatar with local video
     const toggleCam = async () => {
         try {
+            // Pause audio playback when turning cam on to avoid mixed media
+            if (!camOn) {
+                try {
+                    const a = audioRef.current;
+                    if (a && !a.paused)
+                        a.pause();
+                }
+                catch { }
+            }
             if (!camOn) {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: !micUiMuted });
                 localStreamRef.current = stream;
@@ -427,8 +436,29 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         const start = async () => {
             try {
                 await ensureAudioReady();
+                // Pause any other media elements in the page to avoid double playback
+                try {
+                    const nodes = Array.from(document.querySelectorAll('audio, video'));
+                    nodes.forEach(n => { if (n !== a) {
+                        try {
+                            n.pause();
+                        }
+                        catch { }
+                        ;
+                        try {
+                            n.srcObject = null;
+                        }
+                        catch { }
+                        ;
+                    } });
+                }
+                catch { }
                 await a.play();
                 setPlaying(true);
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+                }
+                catch { }
             }
             catch { }
         };
@@ -519,10 +549,44 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             }
             catch { }
         }
+        // Listen for cross-page playback sync if socket is available
+        try {
+            const s = window.sharedSocket;
+            if (s && !s.__audioSyncBound) {
+                s.__audioSyncBound = true;
+                s.on?.('sync', (payload) => {
+                    try {
+                        if (!payload || payload.type !== 'playback')
+                            return;
+                        const a = audioRef.current;
+                        if (!a)
+                            return;
+                        if (payload.action === 'play')
+                            a.play().catch(() => { });
+                        if (payload.action === 'pause')
+                            a.pause();
+                        if (payload.action === 'seek' && typeof payload.time === 'number')
+                            a.currentTime = payload.time;
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch { }
     };
     // Cleanup only on unmount (keep audio graph across track changes)
     useEffect(() => {
         return () => {
+            // Stop local audio element to prevent background playback
+            try {
+                const a = audioRef.current;
+                if (a) {
+                    a.pause();
+                    a.removeAttribute('src');
+                    a.load();
+                }
+            }
+            catch { }
             if (rafRef.current)
                 cancelAnimationFrame(rafRef.current);
             try {
@@ -563,12 +627,28 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             await ensureAudioReady();
             const a = audioRef.current;
             if (a.paused) {
+                // Pause other media first
+                try {
+                    Array.from(document.querySelectorAll('video')).forEach(v => { try {
+                        v.pause();
+                    }
+                    catch { } ; });
+                }
+                catch { }
                 await a.play();
                 setPlaying(true);
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+                }
+                catch { }
             }
             else {
                 a.pause();
                 setPlaying(false);
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'pause' });
+                }
+                catch { }
             }
         }
         catch (e) {
@@ -579,7 +659,12 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         const a = audioRef.current;
         if (!a)
             return;
-        a.currentTime = Math.max(0, Math.min(a.duration || t, t));
+        const nt = Math.max(0, Math.min(a.duration || t, t));
+        a.currentTime = nt;
+        try {
+            window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt });
+        }
+        catch { }
     };
     const handleSkip = (delta) => {
         const a = audioRef.current;
@@ -587,6 +672,55 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             return;
         handleSeek(a.currentTime + delta);
     };
+    // Socket setup + avatars (reuse SharedRoom room + handshake)
+    useEffect(() => {
+        try {
+            const room = sessionStorage.getItem('room') || 'demo';
+            const me = sessionStorage.getItem(`room:${room}:myAvatar`);
+            const peer = sessionStorage.getItem(`room:${room}:peerAvatar`);
+            const myN = sessionStorage.getItem(`room:${room}:myName`);
+            const peerN = sessionStorage.getItem(`room:${room}:peerName`);
+            if (me)
+                setMyAvatar(me);
+            if (peer)
+                setPeerAvatar(peer);
+            if (myN)
+                setMyName(myN);
+            if (peerN)
+                setPeerName(peerN);
+        }
+        catch { }
+        try {
+            if (!window.sharedSocket) {
+                const { io } = require('socket.io-client');
+                const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+                const s = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io' });
+                ;
+                window.sharedSocket = s;
+                s.on('connect', () => {
+                    const room = sessionStorage.getItem('room') || 'demo';
+                    s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+                });
+                s.on('control', (payload) => {
+                    if (payload?.type === 'state') {
+                        if (typeof payload.micMuted === 'boolean')
+                            setMicUiMuted(payload.micMuted);
+                        if (typeof payload.camOn === 'boolean')
+                            setCamOn(payload.camOn);
+                    }
+                });
+                s.on('sync', (payload) => {
+                    try {
+                        if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+                            setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+                        }
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch { }
+    }, []);
     // Derived labels
     const title = useMemo(() => currentTrack?.name || 'Audio', [currentTrack]);
     const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
@@ -631,7 +765,15 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                                     } })] }), _jsx("div", { className: "relative rounded-full p-[12px]", style: {
                                 boxShadow: `0 0 ${28 + 70 * vizEnergy}px rgba(255,255,255,${0.30 + 0.55 * vizEnergy})`,
                                 transition: 'box-shadow 70ms linear',
-                            }, children: _jsx("img", { src: currentTrack?.cover || FALLBACK_COVER, alt: "cover", className: "w-[32vmin] h-[32vmin] max-w-[280px] max-h-[280px] rounded-full object-cover", draggable: false }) })] }) }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-20 flex items-center justify-between", children: [_jsx("button", { onClick: () => (onBack ? onBack() : window.history.back()), "aria-label": "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { onClick: () => { setShowDrawer(true); }, "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) }) })] }), _jsx("div", { className: "absolute top-16 left-0 right-0 z-10 text-center px-6", children: _jsx("div", { className: "inline-block px-4 py-1 text-sm md:text-base text-white/90 backdrop-blur-sm bg-black/20 rounded-full border border-white/10", children: title }) }), _jsx("div", { className: "absolute bottom-4 left-0 right-0 z-20 px-4", children: _jsxs("div", { className: "w-full max-w-6xl mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Back 5s", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: handlePlayPause, className: "h-12 w-12 rounded-full bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border border-white/30 flex items-center justify-center hover:scale-110 transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm", children: playing ? _jsx(Icon.Pause, { className: "w-7 h-7" }) : _jsx(Icon.Play, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Forward 5s", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsxs("div", { className: "flex-1 flex items-center gap-3 min-w-[200px]", children: [_jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90", children: formatTime(progress.cur) }), _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95) 0%, rgba(59,130,246,0.95) 50%, rgba(16,185,129,0.95) 100%)', boxShadow: '0 0 14px rgba(56,189,248,0.45), 0 0 18px rgba(59,130,246,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Seek" })] }), _jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90 text-right", children: formatTime(progress.dur) })] }), _jsxs("div", { className: "flex items-center gap-3", children: [_jsx("button", { onClick: () => setLoop(v => !v), className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Loop", children: _jsx(Icon.Loop, { className: "w-5 h-5" }) }), _jsx("button", { onClick: () => setShuffle(v => !v), className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Shuffle", children: _jsx(Icon.Shuffle, { className: "w-5 h-5" }) }), _jsxs("div", { className: "flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const a = audioRef.current; if (!a)
+                            }, children: _jsx("img", { src: currentTrack?.cover || FALLBACK_COVER, alt: "cover", className: "w-[32vmin] h-[32vmin] max-w-[280px] max-h-[280px] rounded-full object-cover", draggable: false }) })] }) }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-20 flex items-center justify-between", children: [_jsx("button", { onClick: () => { try {
+                            const a = audioRef.current;
+                            if (a) {
+                                a.pause();
+                                a.removeAttribute('src');
+                                a.load();
+                            }
+                        }
+                        catch { } ; (onBack ? onBack() : window.history.back()); }, "aria-label": "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { onClick: () => { setShowDrawer(true); }, "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) }) })] }), _jsx("div", { className: "absolute top-16 left-0 right-0 z-10 text-center px-6", children: _jsx("div", { className: "inline-block px-4 py-1 text-sm md:text-base text-white/90 backdrop-blur-sm bg-black/20 rounded-full border border-white/10", children: title }) }), _jsx("div", { className: "absolute bottom-4 left-0 right-0 z-20 px-4", children: _jsxs("div", { className: "w-full max-w-6xl mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Back 5s", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: handlePlayPause, className: "h-12 w-12 rounded-full bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border border-white/30 flex items-center justify-center hover:scale-110 transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm", children: playing ? _jsx(Icon.Pause, { className: "w-7 h-7" }) : _jsx(Icon.Play, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Forward 5s", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsxs("div", { className: "flex-1 flex items-center gap-3 min-w-[200px]", children: [_jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90", children: formatTime(progress.cur) }), _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95) 0%, rgba(59,130,246,0.95) 50%, rgba(16,185,129,0.95) 100%)', boxShadow: '0 0 14px rgba(56,189,248,0.45), 0 0 18px rgba(59,130,246,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Seek" })] }), _jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90 text-right", children: formatTime(progress.dur) })] }), _jsxs("div", { className: "flex items-center gap-3", children: [_jsx("button", { onClick: () => setLoop(v => !v), className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Loop", children: _jsx(Icon.Loop, { className: "w-5 h-5" }) }), _jsx("button", { onClick: () => setShuffle(v => !v), className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Shuffle", children: _jsx(Icon.Shuffle, { className: "w-5 h-5" }) }), _jsxs("div", { className: "flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const a = audioRef.current; if (!a)
                                                 return; a.muted = !a.muted; setMuted(a.muted); }, className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`, title: "Mute", children: muted ? _jsx(Icon.Mute, { className: "w-5 h-5" }) : _jsx(Icon.Volume, { className: "w-5 h-5" }) }), _jsxs("div", { className: "relative w-[160px] h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${volume * 100}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95), rgba(59,130,246,0.95))', boxShadow: '0 0 12px rgba(56,189,248,0.45)' } }), _jsx("input", { type: "range", min: 0, max: 1, step: 0.01, value: volume, onChange: (e) => { const v = Number(e.target.value); setVolume(v); const a = audioRef.current; if (a)
                                                         a.volume = v; }, className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Volume" })] })] })] })] }) }), _jsx("audio", { ref: audioRef, src: currentTrack?.url, preload: "metadata" }), _jsxs("div", { className: `fixed top-0 right-0 h-full w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`, children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 border-b border-white/10", children: [_jsx("div", { className: "text-white/90 font-medium", children: "Call" }), _jsx("button", { onClick: () => setShowDrawer(false), className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition", "aria-label": "Close", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-4 h-4", children: _jsx("path", { d: "M6 6l12 12M18 6L6 18", stroke: "currentColor", strokeWidth: "2" }) }) })] }), _jsxs("div", { className: "flex flex-col h-[calc(100%-52px)]", children: [_jsx("div", { className: "flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2", children: _jsxs("div", { className: "grid grid-cols-1 gap-3", children: [_jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-[300px] h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }, children: camOn ? (_jsx("video", { ref: myVideoRef, autoPlay: true, muted: true, playsInline: true, className: "w-full h-full object-cover", children: _jsx("track", { kind: "captions" }) })) : (myAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: myAvatar, alt: "me" }) : _jsx("span", { children: "\uD83E\uDDD1" })) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate", children: myName })] }), _jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-[300px] h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }, children: peerAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: peerAvatar, alt: "peer" }) : _jsx("span", { children: "\uD83D\uDC64" }) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate", children: peerName })] }), _jsxs("div", { className: "mt-2 flex items-center justify-center gap-3", children: [_jsx("button", { onClick: toggleCam, title: "Open Video", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, title: "Open Audio", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) })] })] }) }), _jsxs("div", { className: "h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col", children: [_jsx("div", { id: "chatScroll", className: "flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10", children: window.__sharedChat?.length ? window.__sharedChat.map((m) => (_jsx("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: _jsxs("div", { className: `max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm", children: m.text }), _jsx("div", { className: "mt-0.5 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }) }, m.id))) : (_jsx("div", { className: "text-xs text-white/60 text-center py-4", children: "No messages yet. Say hello!" })) }), _jsxs("form", { onSubmit: (e) => {
                                             e.preventDefault();

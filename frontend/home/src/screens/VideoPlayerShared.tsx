@@ -313,7 +313,12 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('loadedmetadata', onLoaded);
     v.addEventListener('ended', () => setPlaying(false));
-    return () => { v.removeEventListener('timeupdate', onTime); v.removeEventListener('loadedmetadata', onLoaded); };
+    return () => {
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('loadedmetadata', onLoaded);
+      // Stop media if component unmounts to avoid background playback
+      try { v.pause(); v.removeAttribute('src'); v.load(); } catch {}
+    };
   }, []);
 
   const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
@@ -323,11 +328,18 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     const v = videoRef.current!;
     try {
       if (v.paused) {
+        // Pause any other media elements to prevent duplicate playback
+        try {
+          const nodes = Array.from(document.querySelectorAll('audio, video')) as HTMLMediaElement[];
+          nodes.forEach(n => { if (n !== v) { try { n.pause(); } catch {}; try { (n as any).srcObject = null; } catch {}; }});
+        } catch {}
         await v.play();
         setPlaying(true);
+        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
       } else {
         v.pause();
         setPlaying(false);
+        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}
       }
     } catch {}
   };
@@ -339,6 +351,16 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   const enterFS = async () => { const el: any = videoRef.current; try { await el?.requestFullscreen?.(); setIsFS(true); } catch {} };
   const exitFS = async () => { try { await document.exitFullscreen(); setIsFS(false); } catch {} };
   const toggleFS = () => (document.fullscreenElement ? exitFS() : enterFS());
+
+  // Stop and clear video (and decoy) to avoid background playback
+  const stopAll = () => {
+    try {
+      const v = videoRef.current; const d = decoyRef.current;
+      if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+      if (d) { d.pause(); d.removeAttribute('src'); d.load(); }
+      setPlaying(false);
+    } catch {}
+  };
 
   // Subtitle toggling and track switching
   const refreshTracksState = () => {
@@ -422,15 +444,17 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     };
 
     const onPlay = () => {
+      try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
       if (!decoy) return;
       try { decoy.playbackRate = v.playbackRate; } catch {}
       try { if (Math.abs((decoy.currentTime || 0) - (v.currentTime || 0)) > 0.15) decoy.currentTime = v.currentTime; } catch {}
       try { decoy.play(); } catch {}
     };
 
-    const onPause = () => { try { decoy?.pause(); } catch {} };
+    const onPause = () => { try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}; try { decoy?.pause(); } catch {} };
 
     const onSeeked = () => {
+      try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime }); } catch {}
       if (!decoy) return;
       try { decoy.currentTime = v.currentTime; } catch {}
     };
@@ -444,6 +468,23 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     v.addEventListener('seeked', onSeeked);
     v.addEventListener('ratechange', onRateChange);
     v.addEventListener('ended', onEnded);
+
+    // Bind socket sync listener once for video
+    try {
+      const s: any = (window as any).sharedSocket;
+      if (s && !(s as any).__videoSyncBound) {
+        (s as any).__videoSyncBound = true;
+        s.on?.('sync', (payload: any) => {
+          try {
+            if (!payload || payload.type !== 'playback') return;
+            if (payload.action === 'play') v.play().catch(()=>{});
+            if (payload.action === 'pause') v.pause();
+            if (payload.action === 'seek' && typeof payload.time === 'number') v.currentTime = payload.time;
+          } catch {}
+        });
+      }
+    } catch {}
+
     return () => {
       v.removeEventListener('loadedmetadata', onLoadedMeta);
       v.removeEventListener('play', onPlay);
@@ -475,7 +516,7 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between">
-        <button onClick={() => { try { location.hash = '#/shared'; } catch { (onBack ? onBack() : window.history.back()); } }} className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition" aria-label="Back">
+        <button onClick={() => { try { stopAll(); location.hash = '#/shared'; } catch { try { stopAll(); } catch {}; (onBack ? onBack() : window.history.back()); } }} className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition" aria-label="Back">
           <Icon.Back className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-2">

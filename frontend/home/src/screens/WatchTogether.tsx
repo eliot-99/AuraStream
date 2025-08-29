@@ -166,9 +166,9 @@ export default function WatchTogether() {
       if (r.status === 401) { setFlash({ type: 'error', text: 'Room password incorrect' }); return; }
       if (r.status === 410) { setFlash({ type: 'error', text: 'Room expired' }); return; }
       if (!r.ok || !j?.token) { setFlash({ type: 'error', text: j?.error || 'Failed to join room' }); return; }
-      // Save access token for handshake and navigate
-      sessionStorage.setItem(`room:${name}:access`, j.token);
-      const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+      // Save access token for handshake and navigate (pass token via URL to new tab)
+      try { sessionStorage.setItem(`room:${name}:access`, j.token); } catch {}
+      const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}&access=${encodeURIComponent(j.token)}`;
       window.open(url, '_blank');
       setFlash({ type: 'success', text: 'Joined room' });
     } catch {
