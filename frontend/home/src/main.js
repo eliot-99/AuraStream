@@ -1,4 +1,4 @@
-import { jsx as _jsx } from "react/jsx-runtime";
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
@@ -74,7 +74,7 @@ function App() {
             shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null');
         }
         catch { }
-        return _jsx(AudioPlayerShared, { onBack: () => { location.hash = '#/watch-together'; }, src: shared?.url, name: shared?.name });
+        return _jsx(AudioPlayerShared, { onBack: () => { location.hash = '#/shared'; }, src: shared?.url, name: shared?.name });
     }
     if (screen === 'video-shared') {
         let shared = null;
@@ -82,7 +82,7 @@ function App() {
             shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null');
         }
         catch { }
-        return _jsx(VideoPlayerShared, { onBack: () => { location.hash = '#/watch-together'; }, src: shared?.url });
+        return _jsx(VideoPlayerShared, { onBack: () => { location.hash = '#/shared'; }, src: shared?.url });
     }
     if (screen === 'solo') {
         return (_jsx(SoloSelect, { onBack: () => setScreen('home'), onPicked: (m) => {
@@ -95,4 +95,18 @@ function App() {
     }
     return _jsx(AudioPlayer, { onBack: () => setScreen('solo'), src: media?.url || '', name: media?.name });
 }
-createRoot(document.getElementById('root')).render(_jsx(React.StrictMode, { children: _jsx(App, {}) }));
+function ToastHost() {
+    const [msg, setMsg] = React.useState(null);
+    React.useEffect(() => {
+        const handler = (e) => {
+            setMsg(e.detail);
+            setTimeout(() => setMsg(null), 2200);
+        };
+        window.addEventListener('toast', handler);
+        return () => window.removeEventListener('toast', handler);
+    }, []);
+    if (!msg)
+        return null;
+    return (_jsx("div", { className: `fixed bottom-6 left-1/2 -translate-x-1/2 z-[1000] px-4 py-3 rounded-xl border ${msg.type === 'error' ? 'bg-red-600/80 border-red-400 text-white' : 'bg-green-600/80 border-green-400 text-white'}`, role: "status", "aria-live": "polite", children: msg.text }));
+}
+createRoot(document.getElementById('root')).render(_jsxs(React.StrictMode, { children: [_jsx(ToastHost, {}), _jsx(App, {})] }));

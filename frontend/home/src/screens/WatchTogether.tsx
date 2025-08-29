@@ -125,6 +125,7 @@ export default function WatchTogether() {
   const [password, setPassword] = useState('');
   const [liveCount, setLiveCount] = useState(0);
   const [showProfile, setShowProfile] = useState(false);
+  const [flash, setFlash] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const keyRef = useRef<CryptoKey | null>(null);
 
   useEffect(() => {
@@ -147,11 +148,32 @@ export default function WatchTogether() {
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Open Shared Room in a new tab without replacing current screen
     const name = room.trim();
-    if (!name) return alert('Enter room name');
-    const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
-    window.open(url, '_blank');
+    if (!name) { setFlash({ type: 'error', text: 'Enter room name' }); return; }
+    try {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      // Derive verifier same as CreateRoom
+      const enc = new TextEncoder();
+      const salt = enc.encode(`aurastream:${name}`);
+      const baseKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, baseKey, 256);
+      const bytes = new Uint8Array(bits);
+      let b64 = ''; for (let i=0;i<bytes.length;i++) b64 += String.fromCharCode(bytes[i]);
+      const passVerifier = btoa(b64);
+      const r = await fetch(`${API_BASE}/api/rooms/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, passVerifier }) });
+      const j = await r.json();
+      if (r.status === 404) { setFlash({ type: 'error', text: 'Room does not exist' }); return; }
+      if (r.status === 401) { setFlash({ type: 'error', text: 'Room password incorrect' }); return; }
+      if (r.status === 410) { setFlash({ type: 'error', text: 'Room expired' }); return; }
+      if (!r.ok || !j?.token) { setFlash({ type: 'error', text: j?.error || 'Failed to join room' }); return; }
+      // Save access token for handshake and navigate
+      sessionStorage.setItem(`room:${name}:access`, j.token);
+      const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+      window.open(url, '_blank');
+      setFlash({ type: 'success', text: 'Joined room' });
+    } catch {
+      setFlash({ type: 'error', text: 'Failed to join room' });
+    }
   };
 
 
@@ -263,6 +285,13 @@ export default function WatchTogether() {
           </form>
         </StarBorder>
       </main>
+
+      {/* Flash toasts */}
+      {flash && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-40 px-4 py-3 rounded-xl border ${flash.type === 'error' ? 'bg-red-600/80 border-red-400 text-white' : 'bg-green-600/80 border-green-400 text-white'}`} role="status" aria-live="polite">
+          {flash.text}
+        </div>
+      )}
 
       {/* Profile modal */}
       <div id="profileModal" className="hidden fixed inset-0 z-30 flex items-center justify-center bg-black/50 p-4">

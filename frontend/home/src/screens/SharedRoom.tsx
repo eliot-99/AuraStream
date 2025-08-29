@@ -67,7 +67,8 @@ export default function SharedRoom() {
 
     socket.on('connect', () => {
       const token = localStorage.getItem('auth');
-      socket.emit('handshake', { room, token, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+      const accessToken = sessionStorage.getItem(`room:${room}:access`);
+      socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
     });
 
     socket.on('userJoined', (payload: any) => {

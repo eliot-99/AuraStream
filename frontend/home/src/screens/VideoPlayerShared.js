@@ -444,9 +444,14 @@ export default function VideoPlayer({ onBack, src }) {
     useEffect(() => {
         if (src) {
             const v = videoRef.current;
+            const d = decoyRef.current;
             if (v) {
                 v.src = src;
                 v.load();
+            }
+            if (d) {
+                d.src = src;
+                d.load();
             }
         }
     }, [src]);

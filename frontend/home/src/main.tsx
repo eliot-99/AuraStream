@@ -90,8 +90,25 @@ function App() {
   return <AudioPlayer onBack={() => setScreen('solo')} src={media?.url || ''} name={media?.name} />;
 }
 
+function ToastHost() {
+  const [msg, setMsg] = React.useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  React.useEffect(() => {
+    const handler = (e: any) => {
+      setMsg(e.detail);
+      setTimeout(() => setMsg(null), 2200);
+    };
+    window.addEventListener('toast', handler as any);
+    return () => window.removeEventListener('toast', handler as any);
+  }, []);
+  if (!msg) return null;
+  return (
+    <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[1000] px-4 py-3 rounded-xl border ${msg.type === 'error' ? 'bg-red-600/80 border-red-400 text-white' : 'bg-green-600/80 border-green-400 text-white'}`} role="status" aria-live="polite">{msg.text}</div>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
+    <ToastHost />
     <App />
   </React.StrictMode>
 );

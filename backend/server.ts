@@ -42,10 +42,16 @@ const io = new SocketIOServer(server, {
 // Optional: Redis adapter for multi-instance scale
 (async () => {
   try {
-    const url = process.env.REDIS_URL;
+    let url = process.env.REDIS_URL || '';
     if (url) {
+      // Auto-upgrade to TLS for Redis Cloud if plain redis:// provided
+      if (/redis-cloud|redns\./i.test(url) && !/^rediss:\/\//i.test(url)) {
+        url = url.replace(/^redis:\/\//i, 'rediss://');
+      }
       const pubClient = createClient({ url });
       const subClient = pubClient.duplicate();
+      pubClient.on('error', (err) => console.error('[REDIS][pub][error]', err?.message || err));
+      subClient.on('error', (err) => console.error('[REDIS][sub][error]', err?.message || err));
       await pubClient.connect();
       await subClient.connect();
       io.adapter(createAdapter(pubClient, subClient));
@@ -77,8 +83,23 @@ io.on('connection', (socket) => {
   socket.on('handshake', (payload: any = {}) => {
     try {
       const requested = (payload.room ?? 'demo');
+      const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken : null;
       roomName = typeof requested === 'string' ? requested.trim() : String(requested);
       if (!roomName) roomName = 'demo';
+
+      // Verify signed JWT token for room access
+      try {
+        const secret = process.env.JWT_SECRET || 'dev';
+        const decoded: any = jwt.verify(accessToken || '', secret);
+        if (!decoded || decoded.room !== roomName) {
+          throw new Error('room_mismatch');
+        }
+      } catch (err) {
+        console.warn('[SOCKET][handshake][deny]', { id: socket.id, room: roomName, hasToken: !!accessToken, err: (err as any)?.message });
+        socket.emit('error', { error: 'access_denied' });
+        return;
+      }
+
       socket.join(roomName);
       addToRoomState(roomName, socket.id);
       const members = io.sockets.adapter.rooms.get(roomName);
@@ -234,15 +255,18 @@ app.get('/api/rooms/validate', async (req, res) => {
 // Create room with client-side password verifier and privacy
 app.post('/api/rooms/create', async (req, res) => {
   const { name, passVerifier, privacy } = (req.body || {}) as any;
-  if (!name || !passVerifier) return res.status(400).json({ error: 'Missing fields' });
+  if (!name) return res.status(400).json({ error: 'Missing fields' });
   if (!ROOM_NAME_RE.test(name)) return res.status(422).json({ error: 'Invalid room name' });
+  const isPublic = privacy === 'public';
+  const pv = isPublic ? '' : String(passVerifier || '');
+  if (!isPublic && !pv) return res.status(400).json({ error: 'Missing password verifier' });
 
   const present = await Room.findOne({ name });
   if (present) return res.status(409).json({ error: 'Room already exists' });
 
   const ttlMin = Number(process.env.ROOM_TTL_MIN || 120);
   const expiresAt = new Date(Date.now() + ttlMin * 60_000);
-  const doc = await Room.create({ name, passVerifier, privacy: privacy === 'public' ? 'public' : 'private', expiresAt });
+  const doc = await Room.create({ name, passVerifier: pv, privacy: isPublic ? 'public' : 'private', expiresAt });
   io.emit('roomCreated', { name, expiresAt, privacy: doc.privacy });
   res.json({ ok: true, name, expiresAt, privacy: doc.privacy, token: crypto.randomBytes(16).toString('hex') });
 });
@@ -250,7 +274,7 @@ app.post('/api/rooms/create', async (req, res) => {
 // Join room by comparing verifier (server never sees plaintext password)
 app.post('/api/rooms/join', async (req, res) => {
   const { name, passVerifier } = (req.body || {}) as any;
-  if (!name || !passVerifier) return res.status(400).json({ error: 'Missing fields' });
+  if (!name) return res.status(400).json({ error: 'Missing room name' });
 
   const r = await Room.findOne({ name });
   if (!r) return res.status(404).json({ error: 'Not found' });
@@ -260,9 +284,14 @@ app.post('/api/rooms/join', async (req, res) => {
     return res.status(410).json({ error: 'Expired' });
   }
 
-  if (r.passVerifier !== passVerifier) return res.status(401).json({ error: 'Unauthorized' });
+  if ((r.privacy || 'private') !== 'public') {
+    if (typeof passVerifier !== 'string' || !passVerifier) return res.status(400).json({ error: 'Missing password' });
+    if (r.passVerifier !== passVerifier) return res.status(401).json({ error: 'Unauthorized' });
+  }
 
-  const token = crypto.randomBytes(16).toString('hex');
+  // Issue short-lived signed token (JWT) for Socket.IO handshake
+  const ttlMin = Number(process.env.SHARE_TTL_MIN || 5);
+  const token = jwt.sign({ room: name }, process.env.JWT_SECRET || 'dev', { expiresIn: `${ttlMin}m` });
   res.json({ ok: true, name, token });
 });
 

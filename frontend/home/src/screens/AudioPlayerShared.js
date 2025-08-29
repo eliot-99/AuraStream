@@ -497,8 +497,10 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             const source = ctx.createMediaElementSource(audio);
             const analyser = ctx.createAnalyser();
             analyser.fftSize = 2048;
+            // Tap the media element into the analyser only. Do NOT connect the analyser to the destination
+            // to avoid creating a second audio path (which causes duplicate playback).
             source.connect(analyser);
-            analyser.connect(ctx.destination);
+            // Leave the element's native audio output active; no WebAudio destination connection here.
             audioCtxRef.current = ctx;
             analyserRef.current = analyser;
             sourceRef.current = source;

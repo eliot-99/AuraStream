@@ -78,11 +78,11 @@ export default function CreateRoom({ onBack }) {
     async function handleCreate() {
         const name = roomName.trim();
         if (!ROOM_NAME_RE.test(name)) {
-            alert('Invalid room name. Use 1-20 alphanumeric characters, no spaces.');
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Invalid room name. Use 1-20 alphanumeric characters, no spaces.' } }));
             return null;
         }
         if (privacy !== 'public' && password.length < 6) {
-            alert('Password must be at least 6 characters.');
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Password must be at least 6 characters.' } }));
             return null;
         }
         setLoading(true);
@@ -99,10 +99,11 @@ export default function CreateRoom({ onBack }) {
             // Store room context for later navigation if needed
             sessionStorage.setItem('room', name);
             sessionStorage.setItem('roomPrivacy', data.privacy || privacy);
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', text: 'Room created' } }));
             return name;
         }
         catch (err) {
-            alert(err?.message || 'Failed to create room');
+            window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: err?.message || 'Failed to create room' } }));
             return null;
         }
         finally {
@@ -121,7 +122,7 @@ export default function CreateRoom({ onBack }) {
                                                         throw new Error(data?.error || 'Failed to generate link');
                                                     const joinUrl = data.shareUrl;
                                                     await navigator.clipboard.writeText(joinUrl);
-                                                    alert('Room joining link copied to your clipbord');
+                                                    window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', text: 'Room link copied' } }));
                                                     // Navigate to shared screen after copying
                                                     const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
                                                     window.location.href = url;
