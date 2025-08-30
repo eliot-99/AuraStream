@@ -27,7 +27,8 @@ function estimateStrength(pw) {
     return { label: 'Strong', color: '#00ff00' };
 }
 const ROOM_NAME_RE = /^[A-Za-z0-9]{1,20}$/;
-const API_BASE = import.meta.env?.VITE_API_BASE || 'http://localhost:8080';
+// Use relative API paths so Vite proxy works over ngrok on mobile as well
+const API_BASE = '';
 // Derive deterministic salt from room name so the verifier is reproducible across clients
 function saltFromRoom(name) {
     return new TextEncoder().encode(`aurastream:${name}`);
@@ -123,8 +124,16 @@ export default function CreateRoom({ onBack }) {
                                                     const joinUrl = data.shareUrl;
                                                     await navigator.clipboard.writeText(joinUrl);
                                                     window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', text: 'Room link copied' } }));
-                                                    // Navigate to shared screen after copying
-                                                    const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+                                                    // Navigate to shared screen after copying. If backend returned access token, include it so Shared can join immediately
+                                                    const url = data?.token
+                                                        ? `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}&access=${encodeURIComponent(data.token)}`
+                                                        : `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
+                                                    // Persist token for same-tab navigation
+                                                    try {
+                                                        if (data?.token)
+                                                            sessionStorage.setItem(`room:${name}:access`, data.token);
+                                                    }
+                                                    catch { }
                                                     window.location.href = url;
                                                 }
                                                 catch (err) {

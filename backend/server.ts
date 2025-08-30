@@ -80,38 +80,63 @@ function removeFromRoomState(room: string, id: string) {
   if (set) { set.delete(id); if (set.size === 0) roomsState.delete(room); }
 }
 
-// Single Socket.IO connection handler (avoid duplicates)
+// Socket.IO connection handler with auth-based join
 io.on('connection', (socket) => {
   let roomName: string | null = null;
-  // [SOCKET][connect] log suppressed
+  console.log('[SOCKET][connect]', { id: socket.id, ip: (socket.handshake.address || '').toString(), ua: socket.handshake.headers['user-agent'] });
+
+  // If client sent auth in handshake, join immediately
+  try {
+    const auth: any = socket.handshake.auth || {};
+    const r = typeof auth.room === 'string' ? auth.room.trim() : '';
+    const accessToken = typeof auth.accessToken === 'string' ? auth.accessToken : '';
+    if (r && accessToken) {
+      const rn = r; // non-null local copy for TS
+      roomName = rn;
+      try {
+        const secret = process.env.JWT_SECRET || 'dev';
+        const decoded: any = jwt.verify(accessToken, secret);
+        if (!decoded || decoded.room !== rn) throw new Error('room_mismatch');
+        socket.join(rn);
+        addToRoomState(rn, socket.id);
+        const members = io.sockets.adapter.rooms.get(rn);
+        const count = members?.size || 1;
+        console.log('[SOCKET][auth-join]', { id: socket.id, room: rn, count });
+        io.to(rn).emit('userJoined', { id: socket.id, room: rn, count });
+        io.to(rn).emit('roomUpdate', { room: rn, members: Array.from(members || []), count });
+      } catch (err) {
+        console.warn('[SOCKET][auth-join][deny]', { id: socket.id, room: rn, hasToken: !!accessToken, err: (err as any)?.message });
+      }
+    }
+  } catch {}
 
   socket.on('handshake', (payload: any = {}) => {
     try {
       const requested = (payload.room ?? 'demo');
       const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken : null;
-      roomName = typeof requested === 'string' ? requested.trim() : String(requested);
-      if (!roomName) roomName = 'demo';
+      const rn = (typeof requested === 'string' ? requested.trim() : String(requested)) || 'demo';
+      roomName = rn;
 
       // Verify signed JWT token for room access
       try {
         const secret = process.env.JWT_SECRET || 'dev';
         const decoded: any = jwt.verify(accessToken || '', secret);
-        if (!decoded || decoded.room !== roomName) {
+        if (!decoded || decoded.room !== rn) {
           throw new Error('room_mismatch');
         }
       } catch (err) {
-        console.warn('[SOCKET][handshake][deny]', { id: socket.id, room: roomName, hasToken: !!accessToken, err: (err as any)?.message });
-        socket.emit('error', { error: 'access_denied' });
+        console.warn('[SOCKET][handshake][deny]', { id: socket.id, room: rn, hasToken: !!accessToken, err: (err as any)?.message });
+        socket.emit('error', { error: 'access_denied', reason: (err as any)?.message });
         return;
       }
 
-      socket.join(roomName);
-      addToRoomState(roomName, socket.id);
-      const members = io.sockets.adapter.rooms.get(roomName);
+      socket.join(rn);
+      addToRoomState(rn, socket.id);
+      const members = io.sockets.adapter.rooms.get(rn);
       const count = members?.size || 1;
-      console.log('[SOCKET][handshake]', { id: socket.id, room: roomName, count, name: payload?.name, hasAvatar: !!payload?.avatar });
-      io.to(roomName).emit('userJoined', { id: socket.id, room: roomName, count, name: payload.name, avatar: payload.avatar });
-      io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
+      console.log('[SOCKET][handshake]', { id: socket.id, room: rn, count, name: payload?.name, hasAvatar: !!payload?.avatar });
+      io.to(rn).emit('userJoined', { id: socket.id, room: rn, count, name: payload.name, avatar: payload.avatar });
+      io.to(rn).emit('roomUpdate', { room: rn, members: Array.from(members || []), count });
     } catch (e) {
       console.error('[SOCKET][handshake][error]', e);
     }
@@ -126,9 +151,29 @@ io.on('connection', (socket) => {
     socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
   });
 
+  // HTTP fallback for signaling (from SharedRoom.js)
+  app.post('/api/webrtc/signal', (req, res) => {
+    try {
+      const { room, payload, senderId } = req.body || {};
+      const t = payload?.type;
+      console.log('[API][webrtc][signal]', { room, type: t, senderId, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
+      if (typeof room === 'string' && ['offer','answer','ice-candidate'].includes(t)) {
+        io.to(room).emit('signal', { ...payload, senderId: senderId || 'http-fallback' });
+      }
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[API][webrtc][signal][error]', e);
+      res.status(500).json({ ok: false });
+    }
+  });
+
   socket.on('control', (payload: any) => {
     console.log('[SOCKET][control]', { from: socket.id, room: roomName, payload });
     if (roomName) io.to(roomName).emit('control', payload);
+  });
+
+  socket.on('debug', (payload: any) => {
+    console.log('[SOCKET][debug]', { id: socket.id, room: roomName, payload });
   });
 
   socket.on('sync', (payload: any, cb?: Function) => {
@@ -281,7 +326,10 @@ app.post('/api/rooms/create', async (req, res) => {
   const expiresAt = new Date(Date.now() + ttlMin * 60_000);
   const doc = await Room.create({ name, passVerifier: pv, privacy: isPublic ? 'public' : 'private', expiresAt });
   io.emit('roomCreated', { name, expiresAt, privacy: doc.privacy });
-  res.json({ ok: true, name, expiresAt, privacy: doc.privacy, token: crypto.randomBytes(16).toString('hex') });
+  // Issue a signed JWT access token on create so creator can enter Shared screen immediately
+  const shareTtlMin = Number(process.env.SHARE_TTL_MIN || 5);
+  const token = jwt.sign({ room: name }, process.env.JWT_SECRET || 'dev', { expiresIn: `${shareTtlMin}m` });
+  res.json({ ok: true, name, expiresAt, privacy: doc.privacy, token });
 });
 
 // Join room by comparing verifier (server never sees plaintext password)
@@ -618,25 +666,5 @@ app.post('/api/users/forgot/reset', async (req, res) => {
   }
 });
 
-io.on('connection', (socket) => {
-  socket.on('handshake', ({ room, token }) => {
-    if (!room) return;
-    socket.join(room);
-    const clients = io.sockets.adapter.rooms.get(room);
-    io.to(room).emit('userJoined', { id: socket.id, count: clients ? clients.size : 1 });
-  });
-  socket.on('disconnecting', () => {
-    for (const room of socket.rooms) {
-      if (room === socket.id) continue;
-      const clients = io.sockets.adapter.rooms.get(room);
-      const nextCount = clients ? Math.max(0, clients.size - 1) : 0;
-      socket.to(room).emit('userLeft', { id: socket.id, count: nextCount });
-    }
-  });
-  socket.on('sync', (state) => {
-    const room = (state && state.room) || Array.from(socket.rooms)[1];
-    if (!room) return;
-    socket.to(room).emit('sync', state);
-  });
-});
+// Removed legacy duplicate connection handler to avoid conflict with primary handshake flow above.
 

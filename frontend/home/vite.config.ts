@@ -17,8 +17,7 @@ export default defineConfig({
   server: {
     host: true, // listen on all interfaces for external access
     allowedHosts: [
-      '5d96d03b0c39.ngrok-free.app',
-      '5b8c4e6be904.ngrok-free.app'
+      '76a077bc712f.ngrok-free.app'
     ],
     port: 5173,
     strictPort: true,
@@ -26,10 +25,10 @@ export default defineConfig({
     cors: true,
     // Stabilize HMR/WebSocket when accessed via public IP/port forwarding
     hmr: {
-      protocol: 'ws',
-      host: process.env.VITE_PUBLIC_HOST || 'localhost',
-      port: 5173,
-      clientPort: 5173,
+      protocol: 'wss',
+      host: process.env.VITE_PUBLIC_HOST || '76a077bc712f.ngrok-free.app',
+      port: 443,
+      clientPort: 443,
     },
     proxy: {
       '/api': {

@@ -27,12 +27,20 @@ type ChatMsg = { id: string; fromSelf: boolean; text: string; ts: number };
 export default function SharedRoom() {
   const qs = useMemo(() => parseHashQuery(), []);
   const [room, setRoom] = useState<string>(() => String((qs as any).room || sessionStorage.getItem('room') || 'demo'));
-  // Persist access token if it came via URL (opened in new tab)
+  // Persist a valid access token if it came via URL; ignore malformed values and clean URL
   useEffect(() => {
     const access = (qs as any).access as string | undefined;
     const r = (qs as any).room as string | undefined;
     if (access && r) {
-      try { sessionStorage.setItem(`room:${r}:access`, access); } catch {}
+      const looksJwt = typeof access === 'string' && access.split('.').length === 3;
+      if (looksJwt) {
+        try { sessionStorage.setItem(`room:${r}:access`, access); } catch {}
+      }
+      // Clean URL fragment to avoid reusing stale/malformed token on reload/share
+      try {
+        const base = location.hash.replace(/\?.*$/, '');
+        location.hash = `${base}?room=${encodeURIComponent(r)}`;
+      } catch {}
     }
   }, [qs]);
 
@@ -71,22 +79,64 @@ export default function SharedRoom() {
   }, [room]);
 
   useEffect(() => {
-    const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true });
+    // Use relative origin for Socket.IO so it matches ngrok/Vite host on both laptop and phone
+    const accessFromUrl = (qs as any).access as string | undefined;
+    const accessFromStore = sessionStorage.getItem(`room:${room}:access`) || undefined;
+    const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
+    const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
+    const socket = io('/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, auth: { room, accessToken } });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       const token = localStorage.getItem('auth');
-      const accessToken = sessionStorage.getItem(`room:${room}:access`);
+      const accessFromUrl = (qs as any).access as string | undefined;
+      const accessFromStore = sessionStorage.getItem(`room:${room}:access`) || undefined;
+      const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
+      const accessToken = pick(accessFromStore) || pick(accessFromUrl);
       // New joiner is the polite peer by default
       politeRef.current = true;
+      socket.emit('debug', { stage: 'connect', room, hasToken: !!token, hasAccess: !!accessToken });
       socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
     });
 
-    socket.on('error', (err: any) => {
+    async function refreshAccessTokenIfNeeded(reason?: string) {
+      try {
+        // Try to mint a fresh short-lived access token
+        const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+        const r = await fetch(`${API_BASE}/api/rooms/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: room })
+        });
+        if (r.ok) {
+          const j = await r.json();
+          const looksJwt = j?.token && typeof j.token === 'string' && j.token.split('.').length === 3;
+          if (looksJwt) {
+            try { sessionStorage.setItem(`room:${room}:access`, j.token); } catch {}
+            const newToken = j.token as string;
+            socket.auth = { room, accessToken: newToken } as any;
+            socket.connect();
+            // Re-emit handshake with profile data
+            const token = localStorage.getItem('auth');
+            const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
+            const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
+            socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+            return true;
+          }
+        }
+      } catch {}
+      return false;
+    }
+
+    socket.on('error', async (err: any) => {
       if (err?.error === 'access_denied') {
+        const reason = String(err?.reason || '');
+        if (/jwt/i.test(reason)) {
+          const ok = await refreshAccessTokenIfNeeded(reason);
+          if (ok) return;
+        }
         window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Access denied to room' } }));
-        setTimeout(()=>{ location.hash = '#/watch-together'; }, 300);
+        setTimeout(()=>{ location.hash = '#/watch-together'; }, 600);
       }
     });
 
@@ -103,6 +153,13 @@ export default function SharedRoom() {
       try { if (payload?.name) sessionStorage.setItem(`room:${room}:peerName`, payload.name); } catch {}
       try { if (payload?.avatar) sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar); } catch {}
       setTimeout(()=>{ maybeNegotiate('peer-joined'); }, 0); // defer to ensure refs and UI settled
+    });
+
+    // Ensure both peers see the same participant count
+    socket.on('roomUpdate', (payload: any = {}) => {
+      const count = typeof payload.count === 'number' ? payload.count : undefined;
+      if (count !== undefined) setParticipants(count);
+      setPeerPresent((count || 0) > 1);
     });
 
     socket.on('signal', async (payload: any) => { await handleSignal(payload); });
@@ -515,11 +572,11 @@ export default function SharedRoom() {
           <div className="mt-2 text-white/80 text-sm">Room: <span className="text-white font-semibold">{room}</span> • Participants: {participants}</div>
 
           {/* Avatars/Video Circles placed under room header */}
-          <div className="mt-6 flex items-center justify-center gap-28">
+          <div className="mt-6 flex items-center justify-center gap-10 sm:gap-16 md:gap-20 lg:gap-28 px-2">
             {/* Self (host) */}
             <div className="flex flex-col items-center">
               <div className="relative">
-                <div className="relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30">
+                <div className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44">
                   <video ref={localTopRef} className="h-full w-full object-cover" playsInline muted style={{ display: camOn ? 'block' : 'none' }} />
                   {!camOn && (
                     myAvatar ? <img src={myAvatar} alt="Me" className="h-full w-full object-cover" /> : <div className="text-6xl">👤</div>
@@ -534,7 +591,7 @@ export default function SharedRoom() {
             {/* Peer */}
             <div className="flex flex-col items-center">
               <div className="relative">
-                <div className="relative z-10 h-44 w-44 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30">
+                <div className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44">
                   {/* Remote video */}
                   <video ref={remoteTopRef} className="h-full w-full object-cover" playsInline style={{ display: remoteHasVideo ? 'block' : 'none' }} />
                   {/* Placeholder with loader before peer joins */}
@@ -576,19 +633,19 @@ export default function SharedRoom() {
           {/* Controls: Open Video, Open Audio (mic), Open Messages, End Room */}
           <div className="mt-8 flex items-center justify-center gap-3 flex-wrap">
             {/* Open Video */}
-            <button onClick={toggleCamera} aria-label="Open Video" title="Open Video" className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+            <button onClick={toggleCamera} aria-label="Open Video" title="Open Video" disabled={participants < 2} className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/></svg>
             </button>
             {/* Open Audio */}
-            <button onClick={toggleMic} aria-label="Open Audio" title="Open Audio" className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+            <button onClick={toggleMic} aria-label="Open Audio" title="Open Audio" disabled={participants < 2} className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
             </button>
             {/* Open Messages */}
-            <button onClick={()=>setChatOpen(v=>!v)} aria-label="Open Messages" title="Open Messages" className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
+            <button onClick={()=>setChatOpen(v=>!v)} aria-label="Open Messages" title="Open Messages" disabled={participants < 2} className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
             </button>
             {/* Choose Media */}
-            <button onClick={chooseMedia} aria-label="Choose Media to Stream" title="Choose Media to Stream" className="h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center">
+            <button onClick={chooseMedia} aria-label="Choose Media to Stream" title="Choose Media to Stream" disabled={participants < 2} className={`h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z"/></svg>
             </button>
             {/* End Room */}

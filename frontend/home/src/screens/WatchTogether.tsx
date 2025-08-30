@@ -151,7 +151,8 @@ export default function WatchTogether() {
     const name = room.trim();
     if (!name) { setFlash({ type: 'error', text: 'Enter room name' }); return; }
     try {
-      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      // Use relative API paths so Vite proxy works over ngrok on mobile as well
+      const API_BASE = '';
       // Derive verifier same as CreateRoom
       const enc = new TextEncoder();
       const salt = enc.encode(`aurastream:${name}`);
