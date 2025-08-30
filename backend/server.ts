@@ -152,25 +152,26 @@ io.on('connection', (socket) => {
     const type = payload?.type || typeof payload;
     // Whitelist only expected types
     if (!['offer','answer','ice-candidate'].includes(type)) return;
-    console.log('[SOCKET][signal]', { from: socket.id, room: roomName, type, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
-    socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
-  });
-
-  // HTTP fallback for signaling (from SharedRoom.js)
-  app.post('/api/webrtc/signal', (req, res) => {
+    const targetId = typeof payload?.to === 'string' ? payload.to : '';
+    const logBase = { from: socket.id, room: roomName, type, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate } as any;
     try {
-      const { room, payload, senderId } = req.body || {};
-      const t = payload?.type;
-      console.log('[API][webrtc][signal]', { room, type: t, senderId, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
-      if (typeof room === 'string' && ['offer','answer','ice-candidate'].includes(t)) {
-        io.to(room).emit('signal', { ...payload, senderId: senderId || 'http-fallback' });
+      if (targetId) {
+        const target = (io.sockets as any).sockets.get ? (io.sockets as any).sockets.get(targetId) : (io as any).of('/').sockets.get(targetId);
+        const inRoom = !!target && target.rooms && target.rooms.has && target.rooms.has(roomName);
+        console.log('[SOCKET][signal][target]', { ...logBase, to: targetId, inRoom });
+        if (target && inRoom) {
+          io.to(targetId).emit('signal', { ...payload, senderId: socket.id });
+          return;
+        }
       }
-      res.json({ ok: true });
+      console.log('[SOCKET][signal]', logBase);
+      socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
     } catch (e) {
-      console.error('[API][webrtc][signal][error]', e);
-      res.status(500).json({ ok: false });
+      console.warn('[SOCKET][signal][error]', (e as any)?.message || e);
     }
   });
+
+
 
   socket.on('control', (payload: any) => {
     console.log('[SOCKET][control]', { from: socket.id, room: roomName, payload });
@@ -481,17 +482,31 @@ app.get('/api/webrtc/turn-test', async (_req, res) => {
 });
 
 app.post('/api/webrtc/signal', async (req, res) => {
-  const { room, payload, senderId } = (req.body || {}) as any;
-  if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
-  const type = String(payload.type);
-  // Validate payload type to reduce noise
-  if (!['offer','answer','ice-candidate'].includes(type)) {
-    console.warn('[API][webrtc][signal][drop]', { room, type, senderId });
-    return res.status(400).json({ error: 'Invalid signal type' });
+  try {
+    const { room, payload, senderId, accessToken } = (req.body || {}) as any;
+    if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
+    const type = String(payload.type);
+    if (!['offer','answer','ice-candidate'].includes(type)) {
+      console.warn('[API][webrtc][signal][drop]', { room, type, senderId });
+      return res.status(400).json({ error: 'Invalid signal type' });
+    }
+    // Require a valid room access token to prevent spoofed signals
+    try {
+      const secret = process.env.JWT_SECRET || 'dev';
+      const decoded: any = jwt.verify(String(accessToken || ''), secret);
+      if (!decoded || decoded.room !== room) return res.status(401).json({ error: 'Unauthorized' });
+    } catch (err) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    console.log('[API][webrtc][signal]', { room, type, senderId, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
+    const targetId = typeof payload?.to === 'string' ? payload.to : '';
+    if (targetId) io.to(targetId).emit('signal', { ...payload, senderId: senderId || 'http-fallback' });
+    else io.to(room).emit('signal', { ...payload, senderId: senderId || 'http-fallback' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[API][webrtc][signal][error]', e);
+    res.status(500).json({ ok: false });
   }
-  console.log('[API][webrtc][signal]', { room, type, senderId, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate });
-  io.to(room).emit('signal', payload);
-  res.json({ ok: true });
 });
 
 // Users

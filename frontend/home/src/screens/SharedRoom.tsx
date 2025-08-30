@@ -93,18 +93,44 @@ export default function SharedRoom() {
       politeRef.current = true;
       socket.emit('debug', { stage: 'connect', room, hasToken: !!token, hasAccess: !!accessToken });
       socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+      // Immediately ask for current room state to synchronize participant count
+      socket.emit('sync', { type: 'ping' });
     });
+
+    async function derivePassVerifier(name: string, password: string) {
+      const enc = new TextEncoder();
+      const salt = enc.encode(`aurastream:${name}`);
+      const baseKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, baseKey, 256);
+      const bytes = new Uint8Array(bits);
+      let b64 = ''; for (let i=0;i<bytes.length;i++) b64 += String.fromCharCode(bytes[i]);
+      return btoa(b64);
+    }
 
     async function refreshAccessTokenIfNeeded(reason?: string) {
       try {
         // Try to mint a fresh short-lived access token
         const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-        const passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
-        const r = await fetch(`${API_BASE}/api/rooms/join`, {
+        let passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
+        let r = await fetch(`${API_BASE}/api/rooms/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: room, passVerifier })
         });
+        // If server requires password (private room) and we don't have pv cached, prompt once
+        if (!r.ok && (r.status === 400 || r.status === 401)) {
+          const pw = window.prompt('Room password required to rejoin:');
+          if (!pw) return false;
+          try {
+            passVerifier = await derivePassVerifier(room, pw);
+            try { sessionStorage.setItem(`room:${room}:pv`, passVerifier); } catch {}
+            r = await fetch(`${API_BASE}/api/rooms/join`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: room, passVerifier })
+            });
+          } catch {}
+        }
         if (r.ok) {
           const j = await r.json();
           const looksJwt = j?.token && typeof j.token === 'string' && j.token.split('.').length === 3;
@@ -112,12 +138,15 @@ export default function SharedRoom() {
             try { sessionStorage.setItem(`room:${room}:access`, j.token); } catch {}
             const newToken = j.token as string;
             socket.auth = { room, accessToken: newToken } as any;
-            socket.connect();
-            // Re-emit handshake with profile data
-            const token = localStorage.getItem('auth');
-            const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
-            const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
-            socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+            // If already connected, avoid reconnect loop; just emit handshake with new token
+            if (socket.connected) {
+              const token = localStorage.getItem('auth');
+              const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
+              const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
+              socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+            } else {
+              socket.connect();
+            }
             return true;
           }
         }
@@ -130,10 +159,9 @@ export default function SharedRoom() {
         const reason = String(err?.reason || '');
         if (/jwt/i.test(reason)) {
           const ok = await refreshAccessTokenIfNeeded(reason);
-          if (ok) return;
+          if (ok) return; // stay on page and let handshake proceed
         }
         window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Access denied to room' } }));
-        setTimeout(()=>{ location.hash = '#/watch-together'; }, 600);
       }
     });
 
