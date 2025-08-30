@@ -34,9 +34,14 @@ dotenv.config({ path: rootEnvPath, override: true });
 
 const app = express();
 const server = http.createServer(app);
+// Allowed origins for CORS (comma-separated). '*' = allow all.
+const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: '*', // allow all during testing to avoid transport errors across ngrok
+    origin: (allowedOrigins.length === 1 && allowedOrigins[0] === '*') ? '*' : allowedOrigins,
     methods: ['GET','POST'],
     credentials: true,
   },
@@ -214,8 +219,20 @@ io.on('connection', (socket) => {
   });
 });
 
-app.use(cors());
+// Express CORS to match Socket.IO
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow same-origin/no-origin
+    if (allowedOrigins.length === 1 && allowedOrigins[0] === '*') return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error('CORS blocked'));
+  },
+  credentials: true
+}));
+// Security headers (CSP optional; can be provided via env)
 app.use(helmet({ contentSecurityPolicy: false }));
+if (process.env.CSP_HEADER) app.use((_, res, next) => { res.setHeader('Content-Security-Policy', process.env.CSP_HEADER as string); next(); });
+if (process.env.HSTS_HEADER) app.use((_, res, next) => { res.setHeader('Strict-Transport-Security', process.env.HSTS_HEADER as string); next(); });
 app.use(express.json({ limit: '10mb' }));
 
 // Request log middleware

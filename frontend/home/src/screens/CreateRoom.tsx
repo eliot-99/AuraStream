@@ -20,8 +20,8 @@ function estimateStrength(pw: string) {
 }
 
 const ROOM_NAME_RE = /^[A-Za-z0-9]{1,20}$/;
-// Use relative API paths so Vite proxy works over ngrok on mobile as well
-const API_BASE = '';
+// API base: use Vercel env in production, fallback to same-origin
+const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
 
 // Derive deterministic salt from room name so the verifier is reproducible across clients
 function saltFromRoom(name: string): Uint8Array {

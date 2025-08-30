@@ -17,7 +17,7 @@ export default defineConfig({
   server: {
     host: true, // listen on all interfaces for external access
     allowedHosts: [
-      '76a077bc712f.ngrok-free.app'
+      'a0771082dcbf.ngrok-free.app'
     ],
     port: 5173,
     strictPort: true,

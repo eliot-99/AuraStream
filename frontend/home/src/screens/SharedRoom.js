@@ -25,7 +25,7 @@ function formatBytes(bytes) {
 export default function SharedRoom() {
     const qs = useMemo(() => parseHashQuery(), []);
     const [room, setRoom] = useState(() => String(qs.room || sessionStorage.getItem('room') || 'demo'));
-    // Persist a valid access token if it came via URL; ignore malformed values and clean URL
+    // Persist a valid access token if it came via URL; ignore malformed values (do not modify URL)
     useEffect(() => {
         const access = qs.access;
         const r = qs.room;
@@ -37,12 +37,6 @@ export default function SharedRoom() {
                 }
                 catch { }
             }
-            // Clean URL fragment to avoid reusing stale/malformed token on reload/share
-            try {
-                const base = location.hash.replace(/\?.*$/, '');
-                location.hash = `${base}?room=${encodeURIComponent(r)}`;
-            }
-            catch { }
         }
     }, [qs]);
     const [camOn, setCamOn] = useState(false);

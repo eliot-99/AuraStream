@@ -27,7 +27,7 @@ type ChatMsg = { id: string; fromSelf: boolean; text: string; ts: number };
 export default function SharedRoom() {
   const qs = useMemo(() => parseHashQuery(), []);
   const [room, setRoom] = useState<string>(() => String((qs as any).room || sessionStorage.getItem('room') || 'demo'));
-  // Persist a valid access token if it came via URL; ignore malformed values and clean URL
+  // Persist a valid access token if it came via URL; ignore malformed values (do not modify URL)
   useEffect(() => {
     const access = (qs as any).access as string | undefined;
     const r = (qs as any).room as string | undefined;
@@ -36,11 +36,6 @@ export default function SharedRoom() {
       if (looksJwt) {
         try { sessionStorage.setItem(`room:${r}:access`, access); } catch {}
       }
-      // Clean URL fragment to avoid reusing stale/malformed token on reload/share
-      try {
-        const base = location.hash.replace(/\?.*$/, '');
-        location.hash = `${base}?room=${encodeURIComponent(r)}`;
-      } catch {}
     }
   }, [qs]);
 
@@ -84,7 +79,8 @@ export default function SharedRoom() {
     const accessFromStore = sessionStorage.getItem(`room:${room}:access`) || undefined;
     const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
     const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
-    const socket = io('/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, auth: { room, accessToken } });
+    const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, auth: { room, accessToken } });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -363,7 +359,8 @@ export default function SharedRoom() {
     } else {
       // Fallback via HTTP (rare)
       const senderId = socketRef.current?.id;
-      fetch('/api/webrtc/signal', {
+      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      fetch(`${API_BASE}/api/webrtc/signal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room, payload, senderId })
