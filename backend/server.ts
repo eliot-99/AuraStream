@@ -46,10 +46,10 @@ const io = new SocketIOServer(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket', 'polling'],
-  pingInterval: 10000, // keep-alive heartbeat every 10s
-  pingTimeout: 30000,  // wait up to 30s before considering the client gone
-  upgradeTimeout: 20000, // time allowed for transport upgrade
+  transports: ['websocket'], // force websocket only
+  allowUpgrades: false, // disable HTTP polling upgrade path
+  pingInterval: 10000,
+  pingTimeout: 30000,
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
 });
 
@@ -168,7 +168,7 @@ io.on('connection', (socket) => {
           return;
         }
       }
-      console.log('[SOCKET][signal]', logBase);
+      console.log('[SOCKET][signal]', logBase); // keep
       socket.to(roomName).emit('signal', { ...payload, senderId: socket.id });
     } catch (e) {
       console.warn('[SOCKET][signal][error]', (e as any)?.message || e);
@@ -178,12 +178,11 @@ io.on('connection', (socket) => {
 
 
   socket.on('control', (payload: any) => {
-    console.log('[SOCKET][control]', { from: socket.id, room: roomName, payload });
     if (roomName) io.to(roomName).emit('control', payload);
   });
 
   socket.on('debug', (payload: any) => {
-    console.log('[SOCKET][debug]', { id: socket.id, room: roomName, payload });
+
   });
 
   socket.on('sync', (payload: any, cb?: Function) => {
@@ -193,7 +192,7 @@ io.on('connection', (socket) => {
         if (cb) cb(null, { ok: true, ts });
         return;
       }
-      console.log('[SOCKET][sync]', { from: socket.id, room: roomName, payload });
+
       if (roomName) io.to(roomName).emit('sync', payload);
       if (cb) cb(null, { ok: true });
     } catch (e) {
