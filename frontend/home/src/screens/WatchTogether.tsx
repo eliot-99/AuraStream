@@ -79,7 +79,8 @@ function useProfile() {
   useEffect(() => {
     const token = localStorage.getItem('auth');
     if (!token) { setLoading(false); return; }
-    fetch('/api/users/me', { headers: { Authorization: `Bearer ${token}` } })
+    const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+    fetch(`${API_BASE}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then(async r => {
         if (!r.ok) throw new Error(`status:${r.status}`);
         const j = await r.json();
