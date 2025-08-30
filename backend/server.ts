@@ -193,7 +193,7 @@ io.on('connection', (socket) => {
         return;
       }
 
-      if (roomName) io.to(roomName).emit('sync', payload);
+      if (roomName) socket.to(roomName).emit('sync', payload);
       if (cb) cb(null, { ok: true });
     } catch (e) {
       console.error('[SOCKET][sync][error]', e);
