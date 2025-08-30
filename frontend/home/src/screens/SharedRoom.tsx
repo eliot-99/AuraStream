@@ -99,10 +99,11 @@ export default function SharedRoom() {
       try {
         // Try to mint a fresh short-lived access token
         const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+        const passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
         const r = await fetch(`${API_BASE}/api/rooms/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: room })
+          body: JSON.stringify({ name: room, passVerifier })
         });
         if (r.ok) {
           const j = await r.json();

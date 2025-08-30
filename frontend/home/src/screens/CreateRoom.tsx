@@ -101,6 +101,10 @@ export default function CreateRoom({ onBack }: Props) {
       // Store room context for later navigation if needed
       sessionStorage.setItem('room', name);
       sessionStorage.setItem('roomPrivacy', data.privacy || privacy);
+      // Persist access token from create response so creator can join immediately
+      try { if (data?.token) sessionStorage.setItem(`room:${name}:access`, data.token); } catch {}
+      // Also persist password verifier for future token refreshes
+      try { if (passVerifier) sessionStorage.setItem(`room:${name}:pv`, passVerifier); } catch {}
       window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', text: 'Room created' } }));
       return name;
     } catch (err: any) {
@@ -235,12 +239,8 @@ export default function CreateRoom({ onBack }: Props) {
                       const joinUrl = data.shareUrl as string;
                       await navigator.clipboard.writeText(joinUrl);
                       window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'success', text: 'Room link copied' } }));
-                      // Navigate to shared screen after copying. If backend returned access token, include it so Shared can join immediately
-                      const url = data?.token
-                        ? `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}&access=${encodeURIComponent(data.token)}`
-                        : `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
-                      // Persist token for same-tab navigation
-                      try { if (data?.token) sessionStorage.setItem(`room:${name}:access`, data.token); } catch {}
+                      // Navigate to shared screen for the creator. Access token from create is already in sessionStorage.
+                      const url = `${location.origin}${location.pathname}#/shared?room=${encodeURIComponent(name)}`;
                       window.location.href = url;
                     } catch (err: any) {
                       alert(err?.message || 'Failed to copy room link');

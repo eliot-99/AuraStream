@@ -162,6 +162,8 @@ export default function WatchTogether() {
       const bytes = new Uint8Array(bits);
       let b64 = ''; for (let i=0;i<bytes.length;i++) b64 += String.fromCharCode(bytes[i]);
       const passVerifier = btoa(b64);
+      // Persist verifier so SharedRoom can refresh access tokens if needed
+      try { sessionStorage.setItem(`room:${name}:pv`, passVerifier); } catch {}
       const r = await fetch(`${API_BASE}/api/rooms/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, passVerifier }) });
       const j = await r.json();
       if (r.status === 404) { setFlash({ type: 'error', text: 'Room does not exist' }); return; }
