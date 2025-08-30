@@ -66,6 +66,7 @@ export default function SharedRoom() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const remoteIdRef = useRef<string | null>(null);
   const isNegotiatingRef = useRef(false);
   const [iceServers, setIceServers] = useState<IceServer[]>([{ urls: 'stun:stun.l.google.com:19302' }]);
 
@@ -80,7 +81,7 @@ export default function SharedRoom() {
     const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
     const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
     const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, auth: { room, accessToken } });
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io', withCredentials: true, reconnectionAttempts: 5, reconnectionDelay: 1000, auth: { room, accessToken } });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -170,6 +171,8 @@ export default function SharedRoom() {
       const count = typeof payload?.count === 'number' ? payload.count : undefined;
       if (count !== undefined) setParticipants(count);
       if (payload?.id && payload.id === selfId) return; // ignore our own join echo
+      // Save remote id for targeted signaling
+      if (payload?.id) remoteIdRef.current = payload.id;
       // Existing member becomes impolite peer
       politeRef.current = false;
       setPeerPresent(true);
@@ -185,6 +188,7 @@ export default function SharedRoom() {
       const count = typeof payload.count === 'number' ? payload.count : undefined;
       if (count !== undefined) setParticipants(count);
       setPeerPresent((count || 0) > 1);
+      console.log('[CLIENT][roomUpdate]', { count, members: payload?.members?.length });
     });
 
     socket.on('signal', async (payload: any) => { await handleSignal(payload); });
@@ -217,7 +221,7 @@ export default function SharedRoom() {
     };
     const id = setInterval(ping, 5000); ping();
 
-    socket.on('userLeft', (payload: any) => { if (typeof payload?.count === 'number') setParticipants(payload.count); setPeerPresent(false); setPeerName(null); setPeerAvatar(null); setRemoteHasVideo(false); });
+    socket.on('userLeft', (payload: any) => { if (typeof payload?.count === 'number') setParticipants(payload.count); setPeerPresent(false); setPeerName(null); setPeerAvatar(null); setRemoteHasVideo(false); remoteIdRef.current = null; });
 
     return () => { clearInterval(id); socket.disconnect(); };
   }, [room]);
@@ -383,16 +387,19 @@ export default function SharedRoom() {
 
   function sendSignal(payload: any) {
     const socket = socketRef.current;
+    const to = remoteIdRef.current || payload?.to;
+    const body = to ? { ...payload, to } : payload;
     if (socket && socket.connected) {
-      socket.emit('signal', payload);
+      socket.emit('signal', body);
     } else {
-      // Fallback via HTTP (rare)
+      // Fallback via HTTP (rare) with auth
       const senderId = socketRef.current?.id;
       const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+      const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
       fetch(`${API_BASE}/api/webrtc/signal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room, payload, senderId })
+        body: JSON.stringify({ room, payload: body, senderId, accessToken })
       }).catch(()=>{});
     }
   }

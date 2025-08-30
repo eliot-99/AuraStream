@@ -46,7 +46,11 @@ const io = new SocketIOServer(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  pingInterval: 10000, // keep-alive heartbeat every 10s
+  pingTimeout: 30000,  // wait up to 30s before considering the client gone
+  upgradeTimeout: 20000, // time allowed for transport upgrade
+  connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
 });
 
 // Optional: Redis adapter for multi-instance scale
@@ -213,10 +217,8 @@ io.on('connection', (socket) => {
       const count = members?.size || 0;
       io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
     }
-    // Suppress noisy transport error disconnect logs
-    if (String(reason) !== 'transport error') {
-      console.log('[SOCKET][disconnect]', { id: socket.id, reason });
-    }
+    // Always log disconnect reason for debugging (ping timeout, transport close, etc.)
+    console.log('[SOCKET][disconnect]', { id: socket.id, reason });
   });
 });
 
@@ -239,10 +241,13 @@ app.use(express.json({ limit: '10mb' }));
 // Request log middleware
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log('[REQ]', req.method, req.url);
-  res.on('finish', () => {
-    console.log('[RES]', req.method, req.url, '->', res.statusCode, `${Date.now() - start}ms`);
-  });
+  // Minimal request logging in production to reduce noise
+  if (req.url.startsWith('/api/webrtc/signal') || req.url.startsWith('/health')) {
+    console.log('[REQ]', req.method, req.url);
+    res.on('finish', () => {
+      console.log('[RES]', req.method, req.url, '->', res.statusCode, `${Date.now() - start}ms`);
+    });
+  }
   next();
 });
 
