@@ -213,6 +213,14 @@ export default function SharedRoom() {
         if (payload.action === 'pause') v.pause();
         if (payload.action === 'seek' && typeof payload.time === 'number') v.currentTime = payload.time;
       }
+      if (payload.type === 'navigate' && (payload.mode === 'audio' || payload.mode === 'video')) {
+        try {
+          if (payload.url && payload.name) sessionStorage.setItem('shared:media', JSON.stringify({ url: payload.url, name: payload.name, kind: payload.mode }));
+          sessionStorage.setItem('shared:mode', payload.mode);
+          if (payload.streamerId) sessionStorage.setItem('shared:streamerId', String(payload.streamerId));
+        } catch {}
+        try { (location as any).hash = payload.mode === 'video' ? '#/video-shared' : '#/audio-shared'; } catch {}
+      }
     });
 
     const ping = () => {
@@ -504,18 +512,18 @@ export default function SharedRoom() {
       const url = URL.createObjectURL(file);
       try { sessionStorage.setItem('shared:media', JSON.stringify({ url, name: file.name, kind: file.type.startsWith('video/') ? 'video' : 'audio' })); } catch {}
       const el = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio'); el.src = url; el.controls = true; await el.play().catch(()=>{});
-      if (file.type.startsWith('video/')) {
+      const mode = file.type.startsWith('video/') ? 'video' : 'audio';
+      if (mode === 'video') {
         const stream = (el as any).captureStream?.() || null;
         if (localTopRef.current) { localTopRef.current.srcObject = stream; localTopRef.current.muted = true; }
         if (localPanelRef.current) { localPanelRef.current.srcObject = stream; localPanelRef.current.muted = true; }
-        // Navigate to video shared player view for UI
-        try { (location as any).hash = '#/video-shared'; } catch {}
-      } else if (file.type.startsWith('audio/')) {
-        // Navigate to audio shared player view for UI
-        try { (location as any).hash = '#/audio-shared'; } catch {}
       }
       const capture: MediaStream | null = (el as any).captureStream?.() || null; if (!capture) { alert('Browser does not support captureStream for local files'); return; }
       mediaStreamRef.current = capture; stopAllSenders(); const pc = ensurePC(); capture.getTracks().forEach(t => pc.addTrack(t, capture)); await maybeNegotiate('choose-media');
+      // Persist role + navigate for both peers
+      try { sessionStorage.setItem('shared:mode', mode); sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || '')); } catch {}
+      socketRef.current?.emit('sync', { type: 'navigate', mode, url, name: file.name, streamerId: socketRef.current?.id });
+      try { (location as any).hash = mode === 'video' ? '#/video-shared' : '#/audio-shared'; } catch {}
     };
     input.click();
   }
