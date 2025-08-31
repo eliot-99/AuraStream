@@ -37,3 +37,4 @@ frontend/**/.vite/
 *.local
 *.tmp
 *.bak
+.zencoder/
