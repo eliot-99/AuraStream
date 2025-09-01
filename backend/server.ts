@@ -8,6 +8,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath, URL as NodeURL } from 'url';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
@@ -41,13 +42,18 @@ const allowedOrigins = (process.env.CORS_ORIGIN || '*')
   .filter(Boolean);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: (allowedOrigins.length === 1 && allowedOrigins[0] === '*') ? '*' : allowedOrigins,
+    origin: (origin, cb) => {
+      try {
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.length === 1 && allowedOrigins[0] === '*') return cb(null, true);
+        return corsMatcher(origin, allowedOrigins) ? cb(null, true) : cb(new Error('CORS blocked'));
+      } catch { return cb(null, true); }
+    },
     methods: ['GET','POST'],
     credentials: true,
   },
   path: '/socket.io',
   transports: ['websocket','polling'], // allow fallback to HTTP long-polling
-  // allowUpgrades: true by default (keeps upgrade path available)
   pingInterval: 10000,
   pingTimeout: 30000,
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
@@ -221,12 +227,31 @@ io.on('connection', (socket) => {
   });
 });
 
-// Express CORS to match Socket.IO
+// Express CORS to match Socket.IO (supports wildcards like https://*.vercel.app)
+const corsMatcher = (origin: string, list: string[]) => {
+  if (list.length === 1 && list[0] === '*') return true;
+  try {
+    const o = new URL(origin);
+    return list.some(p => {
+      try {
+        if (p === origin) return true;
+        const u = new URL(p.replace('*.', 'wildcard.'));
+        // host wildcard match: *.domain.tld
+        const isWildcard = p.includes('*');
+        if (isWildcard && u.hostname.startsWith('wildcard.')) {
+          const tail = u.hostname.replace(/^wildcard\./, '');
+          return o.hostname === tail || o.hostname.endsWith(`.${tail}`);
+        }
+        // scheme+host exact
+        return u.protocol === o.protocol && u.hostname === o.hostname && (u.port || '') === (o.port || '');
+      } catch { return false; }
+    });
+  } catch { return false; }
+};
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // allow same-origin/no-origin
-    if (allowedOrigins.length === 1 && allowedOrigins[0] === '*') return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (!origin) return cb(null, true);
+    if (corsMatcher(origin, allowedOrigins)) return cb(null, true);
     return cb(new Error('CORS blocked'));
   },
   credentials: true
@@ -302,12 +327,17 @@ app.get('/api/webrtc/config', (_req, res) => {
 
 // Serve frontend build in production
 const clientDir = path.resolve(__dirname, '..', '..', 'frontend', 'home', 'dist');
-app.use(express.static(clientDir));
-// SPA fallback to index.html
-app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
-  res.sendFile(path.join(clientDir, 'index.html'));
-});
+if (fs.existsSync(clientDir)) {
+  app.use(express.static(clientDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    const indexPath = path.join(clientDir, 'index.html');
+    if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+    return res.status(404).send('Frontend not built');
+  });
+} else {
+  console.warn('[CLIENT] Dist folder missing, skipping static serving');
+}
 
 // Mongo connection
 (async () => {
