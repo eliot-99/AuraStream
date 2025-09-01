@@ -81,7 +81,19 @@ export default function SharedRoom() {
     const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
     const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
     const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 800, reconnectionDelayMax: 5000, auth: { room, accessToken } });
+    const socket = io(SOCKET_BASE || '/', {
+      transports: ['websocket','polling'],
+      path: '/socket.io',
+      withCredentials: true,
+      forceNew: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
+      timeout: 20000,
+      autoConnect: true,
+      auth: { room, accessToken }
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {

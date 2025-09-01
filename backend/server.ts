@@ -52,10 +52,11 @@ const io = new SocketIOServer(server, {
     methods: ['GET','POST'],
     credentials: true,
   },
+  cookie: { name: 'io', sameSite: 'none', secure: true, path: '/socket.io' },
   path: '/socket.io',
   transports: ['websocket','polling'], // allow fallback to HTTP long-polling
-  pingInterval: 10000,
-  pingTimeout: 30000,
+  pingInterval: 25000,
+  pingTimeout: 60000,
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
 });
 
@@ -279,9 +280,9 @@ app.use((req, res, next) => {
 app.set('trust proxy', 1);
 // Create a single rate limiter at init and reuse it (required by express-rate-limit)
 const requestLimiter = rateLimit({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT || 120), standardHeaders: true, legacyHeaders: false });
-// Exempt Socket.IO polling endpoints from rate limit to avoid false positives on mobile networks
+// Exempt Socket.IO endpoints from rate limit to avoid false positives on mobile networks
 app.use((req, res, next) => {
-  if (req.path.startsWith('/socket.io/')) return next();
+  if (req.path.startsWith('/socket.io')) return next();
   return requestLimiter(req, res, next);
 });
 
