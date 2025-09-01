@@ -46,8 +46,8 @@ const io = new SocketIOServer(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket'], // force websocket only
-  allowUpgrades: false, // disable HTTP polling upgrade path
+  transports: ['websocket','polling'], // allow fallback to HTTP long-polling
+  // allowUpgrades: true by default (keeps upgrade path available)
   pingInterval: 10000,
   pingTimeout: 30000,
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
@@ -252,11 +252,50 @@ app.use((req, res, next) => {
 
 // Trust proxy when behind ngrok/Cloud proxy so rate-limit can use X-Forwarded-For safely
 app.set('trust proxy', 1);
-app.use(rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false }));
+// Exempt Socket.IO polling endpoints from rate limit to avoid false positives on mobile networks
+app.use((req, res, next) => {
+  if (req.path.startsWith('/socket.io/')) return next();
+  return rateLimit({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT || 120), standardHeaders: true, legacyHeaders: false })(req, res, next);
+});
 
 // Basic health check
 app.get('/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
+});
+
+// WebRTC ICE config endpoint (STUN/TURN)
+app.get('/api/webrtc/config', (_req, res) => {
+  // Supports both *_URLS and single *_SERVER envs, and TURN_USER/TURN_PASS or TURN_USERNAME/TURN_CREDENTIAL
+  const stunRaw = process.env.STUN_URLS || process.env.STUN_SERVER || 'stun:stun.l.google.com:19302';
+  const turnRaw = process.env.TURN_URLS || process.env.TURN_SERVER || '';
+  const turnUser = process.env.TURN_USER || process.env.TURN_USERNAME || '';
+  const turnPass = process.env.TURN_PASS || process.env.TURN_CREDENTIAL || '';
+
+  const stun = stunRaw.split(',').map(s => s.trim()).filter(Boolean);
+  let turns = turnRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+  // If only a single non-TLS TURN is provided, add a TLS variant as well for restrictive networks
+  try {
+    const addTls: string[] = [];
+    for (const u of turns) {
+      if (/^turn:/.test(u) && !/^turns:/.test(u)) {
+        try {
+          const url = new NodeURL(u.replace(/^turn:/, 'turn://'));
+          const host = url.hostname;
+          // Prefer 443 for TLS
+          addTls.push(`turns:${host}:443?transport=tcp`);
+        } catch {}
+      }
+    }
+    turns = [...new Set([...turns, ...addTls])];
+  } catch {}
+
+  const iceServers: any[] = [];
+  if (stun.length) iceServers.push(...stun.map(u => ({ urls: u })));
+  if (turns.length && turnUser && turnPass) {
+    iceServers.push({ urls: turns, username: turnUser, credential: turnPass });
+  }
+  res.json({ iceServers });
 });
 
 // Serve frontend build in production

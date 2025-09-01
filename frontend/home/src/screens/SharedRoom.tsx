@@ -81,7 +81,7 @@ export default function SharedRoom() {
     const pick = (val?: string) => (val && val.split('.').length === 3 ? val : undefined);
     const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
     const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    const socket = io(SOCKET_BASE || '/', { transports: ['websocket'], path: '/socket.io', withCredentials: true, reconnectionAttempts: 5, reconnectionDelay: 1000, auth: { room, accessToken } });
+    const socket = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true, reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 800, reconnectionDelayMax: 5000, auth: { room, accessToken } });
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -308,6 +308,22 @@ export default function SharedRoom() {
     const pc = new RTCPeerConnection({ iceServers });
     pcRef.current = pc;
 
+    // Log ICE state to help diagnose disconnections
+    pc.oniceconnectionstatechange = () => {
+      const st = pc.iceConnectionState;
+      console.log('[WEBRTC][ice]', st);
+      if (st === 'failed' || st === 'disconnected') {
+        // Try ICE restart
+        try {
+          pc.restartIce();
+        } catch {}
+        // Also re-offer
+        try {
+          pc.setLocalDescription();
+        } catch {}
+      }
+    };
+
     pc.onicecandidate = (e) => { if (e.candidate) sendSignal({ type: 'ice-candidate', candidate: e.candidate }); };
 
     pc.ontrack = async (e) => {
@@ -353,7 +369,8 @@ export default function SharedRoom() {
     pc.onnegotiationneeded = async () => {
       try {
         makingOfferRef.current = true;
-        await pc.setLocalDescription(await pc.createOffer());
+        const offer = await pc.createOffer({ iceRestart: pc.iceConnectionState === 'failed' });
+        await pc.setLocalDescription(offer);
         sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
       } catch {}
       finally { makingOfferRef.current = false; }
@@ -389,7 +406,13 @@ export default function SharedRoom() {
     }
 
     if (payload.type === 'ice-candidate' && payload.candidate) {
-      try { await pc.addIceCandidate(payload.candidate); } catch {}
+      try { await pc.addIceCandidate(payload.candidate); } catch (e) {
+        // If addIceCandidate fails due to state, queue until remoteDescription is set
+        try {
+          await new Promise(res => setTimeout(res, 150));
+          await pc.addIceCandidate(payload.candidate);
+        } catch {}
+      }
     }
   }
 

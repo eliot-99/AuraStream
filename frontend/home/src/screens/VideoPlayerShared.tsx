@@ -234,7 +234,8 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     // Join socket room for control sync
     try {
       const { io } = require('socket.io-client');
-      const s = io('/', { transports: ['websocket'] });
+      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+      const s = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true });
       ;(window as any).sharedSocket = s;
       s.on('connect', () => {
         const room = sessionStorage.getItem('room') || 'demo';
