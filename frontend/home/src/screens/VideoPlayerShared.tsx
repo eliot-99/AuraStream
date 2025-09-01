@@ -43,6 +43,15 @@ function formatTime(t: number) {
 }
 
 export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?: string }) {
+  // Identify streamer: only the peer who initiated navigation controls playback
+  const isStreamer = React.useMemo(() => {
+    try {
+      const id = (window as any).sharedSocket?.id || '';
+      const sid = sessionStorage.getItem('shared:streamerId') || '';
+      return !!id && id === sid;
+    } catch { return false; }
+  }, []);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState({ cur: 0, dur: 0 });
@@ -248,8 +257,15 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
         }
       });
       // Receive chat messages into the local drawer list
-      s.on('sync', (payload: any) => {
+      s.on('sync', async (payload: any) => {
         try {
+          if (payload && payload.type === 'playback') {
+            const v = videoRef.current; if (!v) return;
+            if (payload.action === 'play') { try { await v.play(); setPlaying(true); } catch {} }
+            if (payload.action === 'pause') { try { v.pause(); setPlaying(false); } catch {} }
+            if (payload.action === 'seek' && typeof payload.time === 'number') { v.currentTime = payload.time; }
+            return;
+          }
           if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
             (window as any).__sharedChat = [
               ...((window as any).__sharedChat || []),
@@ -326,10 +342,10 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
   // Controls
   const togglePlay = async () => {
+    if (!isStreamer) return;
     const v = videoRef.current!;
     try {
       if (v.paused) {
-        // Pause any other media elements to prevent duplicate playback
         try {
           const nodes = Array.from(document.querySelectorAll('audio, video')) as HTMLMediaElement[];
           nodes.forEach(n => { if (n !== v) { try { n.pause(); } catch {}; try { (n as any).srcObject = null; } catch {}; }});
@@ -346,7 +362,7 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   };
 
 
-  const handleSeek = (t: number) => { const v = videoRef.current; if (!v) return; v.currentTime = Math.max(0, Math.min(v.duration || t, t)); };
+  const handleSeek = (t: number) => { if (!isStreamer) return; const v = videoRef.current; if (!v) return; const nt = Math.max(0, Math.min(v.duration || t, t)); v.currentTime = nt; try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); } catch {} };
   const handleSkip = (d: number) => { const v = videoRef.current; if (!v) return; handleSeek((v.currentTime || 0) + d); };
 
   const enterFS = async () => { const el: any = videoRef.current; try { await el?.requestFullscreen?.(); setIsFS(true); } catch {} };
