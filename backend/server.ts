@@ -252,10 +252,12 @@ app.use((req, res, next) => {
 
 // Trust proxy when behind ngrok/Cloud proxy so rate-limit can use X-Forwarded-For safely
 app.set('trust proxy', 1);
+// Create a single rate limiter at init and reuse it (required by express-rate-limit)
+const requestLimiter = rateLimit({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT || 120), standardHeaders: true, legacyHeaders: false });
 // Exempt Socket.IO polling endpoints from rate limit to avoid false positives on mobile networks
 app.use((req, res, next) => {
   if (req.path.startsWith('/socket.io/')) return next();
-  return rateLimit({ windowMs: 60_000, max: Number(process.env.RATE_LIMIT || 120), standardHeaders: true, legacyHeaders: false })(req, res, next);
+  return requestLimiter(req, res, next);
 });
 
 // Basic health check
