@@ -159,6 +159,17 @@ async function dominantHueFromImage(url) {
     });
 }
 export default function AudioPlayerShared({ onBack, src, name }) {
+    // Identify streamer: only the peer who initiated navigation controls playback
+    const isStreamer = useMemo(() => {
+        try {
+            const id = window.sharedSocket?.id || '';
+            const sid = sessionStorage.getItem('shared:streamerId') || '';
+            return !!id && id === sid;
+        }
+        catch {
+            return false;
+        }
+    }, []);
     // Single track state
     const [currentTrack, setCurrentTrack] = useState(null);
     const audioRef = useRef(null);
@@ -393,15 +404,28 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         }
         catch { }
     }, []);
-    // Initialize with a single track if provided
+    // Initialize from session shared media (preferred), or props fallback for direct use
     useEffect(() => {
-        if (src) {
-            // Try to fetch the file behind the object URL so we can read cover art
+        const initFromSession = () => {
+            try {
+                const j = sessionStorage.getItem('shared:media');
+                if (!j)
+                    return false;
+                const m = JSON.parse(j);
+                if (!m || m.kind !== 'audio' || !m.url)
+                    return false;
+                setCurrentTrack({ name: m.name || 'Audio', url: m.url, cover: FALLBACK_COVER });
+                return true;
+            }
+            catch {
+                return false;
+            }
+        };
+        if (!initFromSession() && src) {
             (async () => {
                 try {
                     const res = await fetch(src);
                     const blob = await res.blob();
-                    // Construct a File-like object for cover extraction
                     const file = new File([blob], name || 'Audio', { type: blob.type || 'audio/mpeg' });
                     let coverUrl = FALLBACK_COVER;
                     const coverBlob = await extractCoverFromFile(file);
@@ -417,7 +441,6 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             })();
         }
         return () => {
-            // Revoke any object URLs created
             objectUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
             objectUrlsRef.current = [];
         };
@@ -623,11 +646,13 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         };
     }, [loop]);
     const handlePlayPause = async () => {
+        // Only streamer controls playback; listener ignores clicks
+        if (!isStreamer)
+            return;
         try {
             await ensureAudioReady();
             const a = audioRef.current;
             if (a.paused) {
-                // Pause other media first
                 try {
                     Array.from(document.querySelectorAll('video')).forEach(v => { try {
                         v.pause();
@@ -656,6 +681,8 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         }
     };
     const handleSeek = (t) => {
+        if (!isStreamer)
+            return;
         const a = audioRef.current;
         if (!a)
             return;
@@ -667,6 +694,8 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         catch { }
     };
     const handleSkip = (delta) => {
+        if (!isStreamer)
+            return;
         const a = audioRef.current;
         if (!a)
             return;
@@ -709,8 +738,32 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                             setCamOn(payload.camOn);
                     }
                 });
-                s.on('sync', (payload) => {
+                s.on('sync', async (payload) => {
                     try {
+                        // Streamer-only control: listeners react to playback events
+                        if (payload && payload.type === 'playback') {
+                            const a = audioRef.current;
+                            if (!a)
+                                return;
+                            if (payload.action === 'play') {
+                                try {
+                                    await a.play();
+                                    setPlaying(true);
+                                }
+                                catch { }
+                            }
+                            if (payload.action === 'pause') {
+                                try {
+                                    a.pause();
+                                    setPlaying(false);
+                                }
+                                catch { }
+                            }
+                            if (payload.action === 'seek' && typeof payload.time === 'number') {
+                                a.currentTime = payload.time;
+                            }
+                            return;
+                        }
                         if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
                             setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
                         }

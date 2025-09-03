@@ -54,6 +54,16 @@ export default function SharedRoom() {
     const [peerAvatar, setPeerAvatar] = useState(null);
     const [turnStatus, setTurnStatus] = useState('unknown');
     const [turnMessage, setTurnMessage] = useState(null);
+    // Ephemeral toast messages
+    const [toasts, setToasts] = useState([]);
+    const pushToast = (text, type = 'info') => {
+        const id = crypto.randomUUID?.() || Math.random().toString(36);
+        setToasts(t => [...t, { id, text, type }]);
+        setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+    };
+    const dismissToast = (id) => setToasts(t => t.filter(x => x.id !== id));
+    // Connection banner
+    const [connUnstable, setConnUnstable] = useState(false);
     const hostLevelRef = useRef(0);
     const peerLevelRef = useRef(0);
     const micMutedRef = useRef(false);
@@ -65,6 +75,7 @@ export default function SharedRoom() {
     const mediaStreamRef = useRef(null);
     const pcRef = useRef(null);
     const socketRef = useRef(null);
+    const remoteIdRef = useRef(null);
     const isNegotiatingRef = useRef(false);
     const [iceServers, setIceServers] = useState([{ urls: 'stun:stun.l.google.com:19302' }]);
     useEffect(() => {
@@ -76,7 +87,20 @@ export default function SharedRoom() {
         const accessFromStore = sessionStorage.getItem(`room:${room}:access`) || undefined;
         const pick = (val) => (val && val.split('.').length === 3 ? val : undefined);
         const accessToken = pick(accessFromStore) || pick(accessFromUrl); // prefer stored, validated JWT
-        const socket = io('/', { transports: ['websocket', 'polling'], path: '/socket.io', withCredentials: true, auth: { room, accessToken } });
+        const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        const socket = io(SOCKET_BASE || '/', {
+            transports: ['websocket', 'polling'],
+            path: '/socket.io',
+            withCredentials: true,
+            forceNew: true,
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 8000,
+            timeout: 20000,
+            autoConnect: true,
+            auth: { room, accessToken }
+        });
         socketRef.current = socket;
         socket.on('connect', () => {
             const token = localStorage.getItem('auth');
@@ -88,16 +112,60 @@ export default function SharedRoom() {
             politeRef.current = true;
             socket.emit('debug', { stage: 'connect', room, hasToken: !!token, hasAccess: !!accessToken });
             socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+            // Immediately ask for current room state to synchronize participant count
+            socket.emit('sync', { type: 'ping' });
+            // Flush any queued signals from storage
+            try {
+                const raw = sessionStorage.getItem(`room:${room}:signalQueue`);
+                const queued = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(queued) && queued.length) {
+                    queued.forEach((m) => socket.emit('signal', m));
+                    sessionStorage.removeItem(`room:${room}:signalQueue`);
+                    signalQueueRef.current = [];
+                }
+            }
+            catch { }
         });
+        async function derivePassVerifier(name, password) {
+            const enc = new TextEncoder();
+            const salt = enc.encode(`aurastream:${name}`);
+            const baseKey = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+            const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, baseKey, 256);
+            const bytes = new Uint8Array(bits);
+            let b64 = '';
+            for (let i = 0; i < bytes.length; i++)
+                b64 += String.fromCharCode(bytes[i]);
+            return btoa(b64);
+        }
         async function refreshAccessTokenIfNeeded(reason) {
             try {
                 // Try to mint a fresh short-lived access token
                 const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-                const r = await fetch(`${API_BASE}/api/rooms/join`, {
+                let passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
+                let r = await fetch(`${API_BASE}/api/rooms/join`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: room })
+                    body: JSON.stringify({ name: room, passVerifier })
                 });
+                // If server requires password (private room) and we don't have pv cached, prompt once
+                if (!r.ok && (r.status === 400 || r.status === 401)) {
+                    const pw = window.prompt('Room password required to rejoin:');
+                    if (!pw)
+                        return false;
+                    try {
+                        passVerifier = await derivePassVerifier(room, pw);
+                        try {
+                            sessionStorage.setItem(`room:${room}:pv`, passVerifier);
+                        }
+                        catch { }
+                        r = await fetch(`${API_BASE}/api/rooms/join`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: room, passVerifier })
+                        });
+                    }
+                    catch { }
+                }
                 if (r.ok) {
                     const j = await r.json();
                     const looksJwt = j?.token && typeof j.token === 'string' && j.token.split('.').length === 3;
@@ -108,12 +176,16 @@ export default function SharedRoom() {
                         catch { }
                         const newToken = j.token;
                         socket.auth = { room, accessToken: newToken };
-                        socket.connect();
-                        // Re-emit handshake with profile data
-                        const token = localStorage.getItem('auth');
-                        const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
-                        const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
-                        socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+                        // If already connected, avoid reconnect loop; just emit handshake with new token
+                        if (socket.connected) {
+                            const token = localStorage.getItem('auth');
+                            const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
+                            const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
+                            socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+                        }
+                        else {
+                            socket.connect();
+                        }
                         return true;
                     }
                 }
@@ -127,10 +199,9 @@ export default function SharedRoom() {
                 if (/jwt/i.test(reason)) {
                     const ok = await refreshAccessTokenIfNeeded(reason);
                     if (ok)
-                        return;
+                        return; // stay on page and let handshake proceed
                 }
                 window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'Access denied to room' } }));
-                setTimeout(() => { location.hash = '#/watch-together'; }, 600);
             }
         });
         socket.on('userJoined', (payload) => {
@@ -140,6 +211,9 @@ export default function SharedRoom() {
                 setParticipants(count);
             if (payload?.id && payload.id === selfId)
                 return; // ignore our own join echo
+            // Save remote id for targeted signaling
+            if (payload?.id)
+                remoteIdRef.current = payload.id;
             // Existing member becomes impolite peer
             politeRef.current = false;
             setPeerPresent(true);
@@ -165,8 +239,22 @@ export default function SharedRoom() {
             if (count !== undefined)
                 setParticipants(count);
             setPeerPresent((count || 0) > 1);
+            console.log('[CLIENT][roomUpdate]', { count, members: payload?.members?.length });
         });
         socket.on('signal', async (payload) => { await handleSignal(payload); });
+        // On reconnect, flush queued signals if any
+        socket.on('reconnect', () => {
+            try {
+                const raw = sessionStorage.getItem(`room:${room}:signalQueue`);
+                const queued = raw ? JSON.parse(raw) : [];
+                if (Array.isArray(queued) && queued.length) {
+                    queued.forEach((m) => socket.emit('signal', m));
+                    sessionStorage.removeItem(`room:${room}:signalQueue`);
+                    signalQueueRef.current = [];
+                }
+            }
+            catch { }
+        });
         socket.on('control', (payload) => {
             if (!payload || typeof payload !== 'object')
                 return;
@@ -206,6 +294,20 @@ export default function SharedRoom() {
                 if (payload.action === 'seek' && typeof payload.time === 'number')
                     v.currentTime = payload.time;
             }
+            if (payload.type === 'navigate' && (payload.mode === 'audio' || payload.mode === 'video')) {
+                try {
+                    if (payload.url && payload.name)
+                        sessionStorage.setItem('shared:media', JSON.stringify({ url: payload.url, name: payload.name, kind: payload.mode }));
+                    sessionStorage.setItem('shared:mode', payload.mode);
+                    if (payload.streamerId)
+                        sessionStorage.setItem('shared:streamerId', String(payload.streamerId));
+                }
+                catch { }
+                try {
+                    location.hash = payload.mode === 'video' ? '#/video-shared' : '#/audio-shared';
+                }
+                catch { }
+            }
         });
         const ping = () => {
             const start = Date.now();
@@ -215,27 +317,41 @@ export default function SharedRoom() {
         const id = setInterval(ping, 5000);
         ping();
         socket.on('userLeft', (payload) => { if (typeof payload?.count === 'number')
-            setParticipants(payload.count); setPeerPresent(false); setPeerName(null); setPeerAvatar(null); setRemoteHasVideo(false); });
+            setParticipants(payload.count); setPeerPresent(false); setPeerName(null); setPeerAvatar(null); setRemoteHasVideo(false); remoteIdRef.current = null; });
         return () => { clearInterval(id); socket.disconnect(); };
     }, [room]);
     useEffect(() => {
         (async () => {
-            try {
-                const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-                const r = await fetch(`${API_BASE}/api/webrtc/config`);
-                if (r.ok) {
-                    const j = await r.json();
-                    if (j?.iceServers) {
-                        setIceServers(j.iceServers);
-                        validateTurn(j.iceServers).catch(() => { });
+            // Fetch ICE config with retry/backoff
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+            let attempt = 0;
+            let ok = false;
+            let lastServers = null;
+            while (attempt < 3 && !ok) {
+                try {
+                    const r = await fetch(`${API_BASE}/api/webrtc/config`);
+                    if (r.ok) {
+                        const j = await r.json();
+                        if (j?.iceServers) {
+                            lastServers = j.iceServers;
+                            setIceServers(j.iceServers);
+                            ok = true;
+                        }
                     }
                 }
+                catch { }
+                if (!ok)
+                    await new Promise(res => setTimeout(res, 500 * Math.pow(2, attempt++)));
             }
-            catch { }
+            if (lastServers) {
+                validateTurn(lastServers).catch(() => { });
+                // Revalidate TURN every ~60s to detect outages
+                const iv = setInterval(() => validateTurn(lastServers).catch(() => { }), 60000);
+                window.addEventListener('beforeunload', () => clearInterval(iv));
+            }
             try {
                 const token = localStorage.getItem('auth');
                 if (token) {
-                    const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
                     const me = await fetch(`${API_BASE}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } });
                     if (!me.ok)
                         throw new Error('unauth');
@@ -286,6 +402,10 @@ export default function SharedRoom() {
     const makingOfferRef = useRef(false);
     const ignoreOfferRef = useRef(false);
     const politeRef = useRef(false);
+    // Queue for misordered ICE candidates until remoteDescription is set
+    const candidateQueueRef = useRef([]);
+    // Queue for signaling messages when socket is disconnected
+    const signalQueueRef = useRef([]);
     async function validateTurn(servers) {
         try {
             const hasTurn = servers.some(s => Array.isArray(s.urls) ? s.urls.some(u => /^turns?:/i.test(u)) : /^turns?:/i.test(String(s.urls)));
@@ -332,6 +452,33 @@ export default function SharedRoom() {
             return pcRef.current;
         const pc = new RTCPeerConnection({ iceServers });
         pcRef.current = pc;
+        // Log ICE state to help diagnose disconnections
+        pc.oniceconnectionstatechange = async () => {
+            const st = pc.iceConnectionState;
+            console.log('[WEBRTC][ice]', st);
+            // Toggle unstable banner
+            setConnUnstable(st === 'failed' || st === 'disconnected');
+            if (st === 'failed' || st === 'disconnected') {
+                try {
+                    pc.restartIce();
+                }
+                catch { }
+                // Force a full renegotiation with iceRestart flag
+                try {
+                    makingOfferRef.current = true;
+                    const offer = await pc.createOffer({ iceRestart: true });
+                    await pc.setLocalDescription(offer);
+                    sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
+                }
+                catch { }
+                finally {
+                    makingOfferRef.current = false;
+                }
+            }
+            if (st === 'connected' || st === 'completed') {
+                setConnUnstable(false);
+            }
+        };
         pc.onicecandidate = (e) => { if (e.candidate)
             sendSignal({ type: 'ice-candidate', candidate: e.candidate }); };
         pc.ontrack = async (e) => {
@@ -389,7 +536,8 @@ export default function SharedRoom() {
         pc.onnegotiationneeded = async () => {
             try {
                 makingOfferRef.current = true;
-                await pc.setLocalDescription(await pc.createOffer());
+                const offer = await pc.createOffer({ iceRestart: pc.iceConnectionState === 'failed' });
+                await pc.setLocalDescription(offer);
                 sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
             }
             catch { }
@@ -417,49 +565,131 @@ export default function SharedRoom() {
             return;
         if (payload.type === 'offer') {
             const offer = { type: 'offer', sdp: payload.sdp };
-            const readyForOffer = !makingOfferRef.current && (pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer');
+            const stableOrHaveLocal = pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer';
+            const readyForOffer = !makingOfferRef.current && stableOrHaveLocal;
+            // Polite peers should not ignore offers; they will rollback if needed
             ignoreOfferRef.current = !readyForOffer && !politeRef.current;
             if (ignoreOfferRef.current)
                 return;
             try {
+                if (pc.signalingState !== 'stable') {
+                    // Rollback our local description to accept the remote offer
+                    await pc.setLocalDescription({ type: 'rollback' });
+                }
                 await pc.setRemoteDescription(offer);
+                // Apply any queued ICE candidates that arrived early
+                while (candidateQueueRef.current.length) {
+                    const c = candidateQueueRef.current.shift();
+                    try {
+                        await pc.addIceCandidate(c);
+                    }
+                    catch { }
+                }
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 sendSignal({ type: 'answer', sdp: answer.sdp });
             }
-            catch { }
+            catch (err) {
+                console.warn('[SIGNAL][offer][error]', err?.message || err);
+            }
             return;
         }
         if (payload.type === 'answer') {
             try {
                 await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
             }
-            catch { }
+            catch (err) {
+                console.warn('[SIGNAL][answer][error]', err?.message || err);
+            }
             return;
         }
         if (payload.type === 'ice-candidate' && payload.candidate) {
+            if (!pc.remoteDescription) {
+                // Queue until we have a remote description
+                candidateQueueRef.current.push(payload.candidate);
+                return;
+            }
             try {
                 await pc.addIceCandidate(payload.candidate);
             }
-            catch { }
+            catch (err) {
+                console.warn('[SIGNAL][candidate][error]', err?.message || err);
+            }
         }
+    }
+    async function httpSignalWithRetry(body, maxAttempts = 4) {
+        const senderId = socketRef.current?.id;
+        const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+        const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
+        let attempt = 0;
+        let lastErr = null;
+        while (attempt < maxAttempts) {
+            try {
+                const r = await fetch(`${API_BASE}/api/webrtc/signal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ room, payload: body, senderId, accessToken })
+                });
+                if (r.ok)
+                    return true;
+                lastErr = new Error(`HTTP ${r.status}`);
+            }
+            catch (e) {
+                lastErr = e;
+            }
+            // Backoff: 300ms, 600ms, 1200ms, 2400ms
+            const delay = 300 * Math.pow(2, attempt);
+            await new Promise(res => setTimeout(res, delay));
+            attempt++;
+        }
+        console.warn('[SIGNAL][HTTP][retry-failed]', lastErr?.message || lastErr);
+        // Toast on failure
+        pushToast('Signaling retry failed, waiting for socket reconnect', 'error');
+        return false;
     }
     function sendSignal(payload) {
         const socket = socketRef.current;
+        const to = remoteIdRef.current || payload?.to;
+        const body = to ? { ...payload, to } : payload;
         if (socket && socket.connected) {
-            socket.emit('signal', payload);
+            socket.emit('signal', body);
         }
         else {
-            // Fallback via HTTP (rare)
-            const senderId = socketRef.current?.id;
-            fetch('/api/webrtc/signal', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ room, payload, senderId })
-            }).catch(() => { });
+            // Queue the signal and try HTTP fallback with retries
+            try {
+                signalQueueRef.current.push(body);
+            }
+            catch { }
+            try {
+                sessionStorage.setItem(`room:${room}:signalQueue`, JSON.stringify(signalQueueRef.current.slice(-50)));
+            }
+            catch { }
+            httpSignalWithRetry(body).catch(() => { });
         }
     }
-    async function maybeNegotiate(_reason) { ensurePC(); }
+    async function maybeNegotiate(reason) {
+        const pc = ensurePC();
+        if (isNegotiatingRef.current)
+            return;
+        // Proactively create offer when stable or when ICE is stalled
+        const shouldOffer = pc.signalingState === 'stable' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected';
+        if (!shouldOffer)
+            return;
+        try {
+            isNegotiatingRef.current = true;
+            makingOfferRef.current = true;
+            const offer = await pc.createOffer({ iceRestart: pc.iceConnectionState === 'failed' });
+            await pc.setLocalDescription(offer);
+            sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp, reason });
+        }
+        catch (err) {
+            console.warn('[NEGOTIATE][error]', err?.message || err);
+        }
+        finally {
+            makingOfferRef.current = false;
+            isNegotiatingRef.current = false;
+        }
+    }
     async function toggleCamera() {
         if (camOn) {
             setCamOn(false);
@@ -513,18 +743,44 @@ export default function SharedRoom() {
             requestAnimationFrame(loop);
         }
         catch { }
+        // Attach to DOM with guards
         if (localTopRef.current) {
-            localTopRef.current.srcObject = ms;
-            localTopRef.current.muted = true;
-            await localTopRef.current.play().catch(() => { });
+            try {
+                localTopRef.current.srcObject = ms;
+                localTopRef.current.muted = true;
+                await localTopRef.current.play();
+            }
+            catch { }
         }
         if (localPanelRef.current) {
-            localPanelRef.current.srcObject = ms;
-            localPanelRef.current.muted = true;
-            await localPanelRef.current.play().catch(() => { });
+            try {
+                localPanelRef.current.srcObject = ms;
+                localPanelRef.current.muted = true;
+                await localPanelRef.current.play();
+            }
+            catch { }
         }
+        // Replace existing senders if present to avoid duplicates
         const pc = ensurePC();
-        ms.getTracks().forEach(t => pc.addTrack(t, ms));
+        try {
+            const senders = pc.getSenders();
+            for (const track of ms.getTracks()) {
+                const kind = track.kind;
+                const sender = senders.find(s => s.track && s.track.kind === kind);
+                if (sender) {
+                    try {
+                        await sender.replaceTrack(track);
+                    }
+                    catch { }
+                }
+                else {
+                    pc.addTrack(track, ms);
+                }
+            }
+        }
+        catch {
+            ms.getTracks().forEach(t => pc.addTrack(t, ms));
+        }
         await maybeNegotiate('camera-on');
         socketRef.current?.emit('control', { type: 'state', camOn: true, micMuted });
     }
@@ -565,7 +821,19 @@ export default function SharedRoom() {
                 catch { }
                 // Attach track to peer connection
                 const pc = ensurePC();
-                ms.getTracks().forEach(t => pc.addTrack(t, ms));
+                try {
+                    const track = ms.getAudioTracks()[0];
+                    const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+                    if (sender && track) {
+                        await sender.replaceTrack(track);
+                    }
+                    else {
+                        ms.getTracks().forEach(t => pc.addTrack(t, ms));
+                    }
+                }
+                catch {
+                    ms.getTracks().forEach(t => pc.addTrack(t, ms));
+                }
                 await maybeNegotiate('mic-on');
             }
             catch { }
@@ -600,7 +868,8 @@ export default function SharedRoom() {
             el.src = url;
             el.controls = true;
             await el.play().catch(() => { });
-            if (file.type.startsWith('video/')) {
+            const mode = file.type.startsWith('video/') ? 'video' : 'audio';
+            if (mode === 'video') {
                 const stream = el.captureStream?.() || null;
                 if (localTopRef.current) {
                     localTopRef.current.srcObject = stream;
@@ -610,18 +879,6 @@ export default function SharedRoom() {
                     localPanelRef.current.srcObject = stream;
                     localPanelRef.current.muted = true;
                 }
-                // Navigate to video shared player view for UI
-                try {
-                    location.hash = '#/video-shared';
-                }
-                catch { }
-            }
-            else if (file.type.startsWith('audio/')) {
-                // Navigate to audio shared player view for UI
-                try {
-                    location.hash = '#/audio-shared';
-                }
-                catch { }
             }
             const capture = el.captureStream?.() || null;
             if (!capture) {
@@ -629,10 +886,39 @@ export default function SharedRoom() {
                 return;
             }
             mediaStreamRef.current = capture;
-            stopAllSenders();
+            // Replace existing senders with new capture tracks
             const pc = ensurePC();
-            capture.getTracks().forEach(t => pc.addTrack(t, capture));
+            try {
+                const senders = pc.getSenders();
+                for (const track of capture.getTracks()) {
+                    const sender = senders.find(s => s.track?.kind === track.kind);
+                    if (sender) {
+                        try {
+                            await sender.replaceTrack(track);
+                        }
+                        catch { }
+                    }
+                    else {
+                        pc.addTrack(track, capture);
+                    }
+                }
+            }
+            catch {
+                stopAllSenders();
+                capture.getTracks().forEach(t => pc.addTrack(t, capture));
+            }
             await maybeNegotiate('choose-media');
+            // Persist role + navigate for both peers
+            try {
+                sessionStorage.setItem('shared:mode', mode);
+                sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || ''));
+            }
+            catch { }
+            socketRef.current?.emit('sync', { type: 'navigate', mode, url, name: file.name, streamerId: socketRef.current?.id });
+            try {
+                location.hash = mode === 'video' ? '#/video-shared' : '#/audio-shared';
+            }
+            catch { }
         };
         input.click();
     }
@@ -706,7 +992,12 @@ export default function SharedRoom() {
         });
         setShowEmoji(false);
     };
-    return (_jsxs("div", { className: "relative min-h-screen overflow-hidden font-montserrat", children: [_jsx("div", { className: "absolute inset-0 -z-20", children: _jsx(RippleGrid, { enableRainbow: true, gridColor: "#8ab4ff", rippleIntensity: 0.06, gridSize: 10, gridThickness: 12, fadeDistance: 1.6, vignetteStrength: 1.8, glowIntensity: 0.12, opacity: 0.6, gridRotation: 0, mouseInteraction: true, mouseInteractionRadius: 0.8 }) }), _jsx("div", { className: "absolute top-4 left-4 z-20 flex items-center gap-2", children: _jsx("button", { onClick: () => (window.location.hash = '#/home'), "aria-label": "Back", title: "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", width: "18", height: "18", fill: "currentColor", "aria-hidden": "true", className: "text-white", children: _jsx("polygon", { points: "15,4 5,12 15,20" }) }) }) }), _jsx("main", { className: "relative z-10 min-h-screen flex items-center justify-center p-6", children: _jsxs(StarBorder, { as: "div", className: "max-w-[64rem] w-[92vw] text-center", color: "#88ccff", speed: "8s", thickness: 2, children: [_jsx("div", { className: "py-4", children: _jsx("div", { className: "w-full max-w-[52rem] mx-auto", children: _jsx(TextPressure, { text: "Shared Room", className: "select-none", fontFamily: "Compressa VF", fontUrl: "https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2", width: true, weight: true, italic: true, alpha: false, flex: false, stroke: false, scale: false, textColor: "#ffffff", minFontSize: 40 }) }) }), turnStatus !== 'ok' && turnStatus !== 'unknown' && (_jsx("div", { className: `mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border ${turnStatus === 'missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`, role: "alert", children: turnMessage })), _jsxs("div", { className: "mt-2 text-white/80 text-sm", children: ["Room: ", _jsx("span", { className: "text-white font-semibold", children: room }), " \u2022 Participants: ", participants] }), _jsxs("div", { className: "mt-6 flex items-center justify-center gap-10 sm:gap-16 md:gap-20 lg:gap-28 px-2", children: [_jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44", children: [_jsx("video", { ref: localTopRef, className: "h-full w-full object-cover", playsInline: true, muted: true, style: { display: camOn ? 'block' : 'none' } }), !camOn && (myAvatar ? _jsx("img", { src: myAvatar, alt: "Me", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "host-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-cyan-400/80", style: { opacity: 0.5, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[11rem] truncate", children: myName })] }), _jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44", children: [_jsx("video", { ref: remoteTopRef, className: "h-full w-full object-cover", playsInline: true, style: { display: remoteHasVideo ? 'block' : 'none' } }), !peerPresent && (_jsx("div", { className: "absolute inset-0 flex items-center justify-center", children: _jsxs("div", { className: "flex items-end gap-1", children: [_jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '0ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '120ms' } }), _jsx("div", { className: "w-2 h-9 bg-pink-500 rounded animate-bounce", style: { animationDelay: '240ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '360ms' } }), _jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '480ms' } })] }) })), peerPresent && !remoteHasVideo && (peerAvatar ? _jsx("img", { src: peerAvatar, alt: "Peer", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "peer-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-pink-400/80", style: { opacity: 0.45, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[18rem]", children: peerPresent ? (_jsx("span", { className: "truncate inline-block max-w-full align-middle", children: peerName || '' })) : (_jsxs("span", { className: "inline-flex items-center", children: [_jsx("span", { className: "align-middle", children: "Waiting for peer" }), _jsxs("span", { className: "ml-1 inline-flex items-center", children: [_jsx("span", { className: "w-1.5 h-1.5 bg-white/80 rounded-full animate-bounce", style: { animationDelay: '0ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce ml-1", style: { animationDelay: '150ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/60 rounded-full animate-bounce ml-1", style: { animationDelay: '300ms' } })] })] })) })] })] }), _jsxs("div", { className: "mt-8 flex items-center justify-center gap-3 flex-wrap", children: [_jsx("button", { onClick: toggleCamera, "aria-label": "Open Video", title: "Open Video", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, "aria-label": "Open Audio", title: "Open Audio", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) }), _jsx("button", { onClick: () => setChatOpen(v => !v), "aria-label": "Open Messages", title: "Open Messages", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z" }) }) }), _jsx("button", { onClick: chooseMedia, "aria-label": "Choose Media to Stream", title: "Choose Media to Stream", disabled: participants < 2, className: `h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z" }) }) }), _jsx("button", { onClick: endRoom, "aria-label": "End Room", title: "End Room", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-red-400/60 hover:scale-110 transition text-red-300 flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2V8h2zm0-8h-2V6h2z" }) }) })] }), chatOpen && (_jsxs("div", { className: "mt-8 mx-auto max-w-2xl w-full rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-0 text-white shadow-2xl overflow-hidden", children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 bg-gradient-to-r from-cyan-500/15 via-transparent to-pink-500/15 border-b border-white/10", children: [_jsxs("div", { className: "text-sm text-white/90 flex items-center gap-2", children: [_jsx("span", { className: "inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" }), "Messages"] }), _jsx("div", { className: "text-xs text-white/70", children: peerPresent ? 'Connected' : 'Waiting for peer…' })] }), _jsxs("div", { id: "chatScroll", className: "h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03]", children: [chat.map(m => (_jsxs("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: [!m.fromSelf && _jsx("div", { className: "mr-2 w-6 h-6 rounded-full bg-pink-400/40 border border-pink-300/40 flex items-center justify-center text-xs", children: "\uD83D\uDC64" }), _jsxs("div", { className: `max-w-[78%] rounded-2xl px-4 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed", children: m.text }), _jsx("div", { className: "mt-1 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }), m.fromSelf && _jsx("div", { className: "ml-2 w-6 h-6 rounded-full bg-cyan-400/40 border border-cyan-300/40 flex items-center justify-center text-xs", children: "\uD83E\uDDD1" })] }, m.id))), chat.length === 0 && (_jsx("div", { className: "text-xs text-white/60 text-center py-6", children: "No messages yet. Say hello!" }))] }), _jsxs("div", { className: "px-4 py-3 bg-gradient-to-r from-cyan-500/10 via-transparent to-pink-500/10 border-t border-white/10 flex items-center gap-3", children: [_jsxs("div", { className: "relative flex-1", children: [_jsx("input", { ref: msgInputRef, value: msg, onChange: e => setMsg(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey) {
+    return (_jsxs("div", { className: "relative min-h-screen overflow-hidden font-montserrat", children: [_jsx("div", { className: "absolute inset-0 -z-20", children: _jsx(RippleGrid, { enableRainbow: true, gridColor: "#8ab4ff", rippleIntensity: 0.06, gridSize: 10, gridThickness: 12, fadeDistance: 1.6, vignetteStrength: 1.8, glowIntensity: 0.12, opacity: 0.6, gridRotation: 0, mouseInteraction: true, mouseInteractionRadius: 0.8 }) }), _jsx("div", { className: "absolute top-4 left-4 z-20 flex items-center gap-2", children: _jsx("button", { onClick: () => (window.location.hash = '#/home'), "aria-label": "Back", title: "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", width: "18", height: "18", fill: "currentColor", "aria-hidden": "true", className: "text-white", children: _jsx("polygon", { points: "15,4 5,12 15,20" }) }) }) }), connUnstable && (_jsxs("div", { className: "fixed top-3 left-1/2 -translate-x-1/2 z-50 bg-yellow-500/20 border border-yellow-400/50 text-yellow-100 rounded-xl px-3 py-2 text-sm flex items-center gap-3 backdrop-blur-md", children: [_jsx("span", { children: "Connection unstable. Trying to recover\u2026" }), _jsx("button", { className: "rounded-md border border-yellow-300/60 px-2 py-1 text-xs hover:bg-yellow-400/10", onClick: () => { maybeNegotiate('manual-reoffer').catch(() => { }); }, children: "Re-negotiate" })] })), _jsx("div", { className: "fixed bottom-4 left-1/2 -translate-x-1/2 z-50 space-y-2 w-[92vw] max-w-md", children: toasts.map(t => (_jsxs("div", { className: `flex items-center justify-between rounded-xl px-3 py-2 text-sm border backdrop-blur-md ${t.type === 'error' ? 'bg-red-500/20 border-red-400/40 text-red-100' : t.type === 'success' ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-100' : 'bg-white/10 border-white/20 text-white'}`, children: [_jsx("span", { className: "pr-2", children: t.text }), _jsx("button", { onClick: () => dismissToast(t.id), className: "text-xs opacity-80 hover:opacity-100", children: "Dismiss" })] }, t.id))) }), _jsx("main", { className: "relative z-10 min-h-screen flex items-center justify-center p-6", children: _jsxs(StarBorder, { as: "div", className: "max-w-[64rem] w-[92vw] text-center", color: "#88ccff", speed: "8s", thickness: 2, children: [_jsx("div", { className: "py-4", children: _jsx("div", { className: "w-full max-w-[52rem] mx-auto", children: _jsx(TextPressure, { text: "Shared Room", className: "select-none", fontFamily: "Compressa VF", fontUrl: "https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2", width: true, weight: true, italic: true, alpha: false, flex: false, stroke: false, scale: false, textColor: "#ffffff", minFontSize: 40 }) }) }), turnStatus !== 'ok' && turnStatus !== 'unknown' && (_jsxs("div", { className: `mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border flex items-center justify-between ${turnStatus === 'missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`, role: "alert", children: [_jsx("span", { children: turnMessage }), _jsx("button", { onClick: () => {
+                                        const servers = iceServers;
+                                        setTurnStatus('unknown');
+                                        setTurnMessage('Revalidating TURN…');
+                                        validateTurn(servers).catch(() => { setTurnStatus('fail'); setTurnMessage('TURN validation failed.'); });
+                                    }, className: "ml-3 rounded-md border border-white/30 px-2 py-1 text-xs hover:bg-white/10", children: "Retry" })] })), _jsxs("div", { className: "mt-2 text-white/80 text-sm", children: ["Room: ", _jsx("span", { className: "text-white font-semibold", children: room }), " \u2022 Participants: ", participants] }), _jsxs("div", { className: "mt-6 flex items-center justify-center gap-10 sm:gap-16 md:gap-20 lg:gap-28 px-2", children: [_jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44", children: [_jsx("video", { ref: localTopRef, className: "h-full w-full object-cover", playsInline: true, muted: true, style: { display: camOn ? 'block' : 'none' } }), !camOn && (myAvatar ? _jsx("img", { src: myAvatar, alt: "Me", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "host-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-cyan-400/80", style: { opacity: 0.5, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[11rem] truncate", children: myName })] }), _jsxs("div", { className: "flex flex-col items-center", children: [_jsxs("div", { className: "relative", children: [_jsxs("div", { className: "relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44", children: [_jsx("video", { ref: remoteTopRef, className: "h-full w-full object-cover", playsInline: true, style: { display: remoteHasVideo ? 'block' : 'none' } }), !peerPresent && (_jsx("div", { className: "absolute inset-0 flex items-center justify-center", children: _jsxs("div", { className: "flex items-end gap-1", children: [_jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '0ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '120ms' } }), _jsx("div", { className: "w-2 h-9 bg-pink-500 rounded animate-bounce", style: { animationDelay: '240ms' } }), _jsx("div", { className: "w-2 h-6 bg-pink-400 rounded animate-bounce", style: { animationDelay: '360ms' } }), _jsx("div", { className: "w-2 h-4 bg-pink-300 rounded animate-bounce", style: { animationDelay: '480ms' } })] }) })), peerPresent && !remoteHasVideo && (peerAvatar ? _jsx("img", { src: peerAvatar, alt: "Peer", className: "h-full w-full object-cover" }) : _jsx("div", { className: "text-6xl", children: "\uD83D\uDC64" }))] }), _jsx("div", { id: "peer-glow", className: "pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-pink-400/80", style: { opacity: 0.45, filter: 'blur(60px)' } })] }), _jsx("div", { className: "text-white/90 text-sm mt-2 text-center max-w-[18rem]", children: peerPresent ? (_jsx("span", { className: "truncate inline-block max-w-full align-middle", children: peerName || '' })) : (_jsxs("span", { className: "inline-flex items-center", children: [_jsx("span", { className: "align-middle", children: "Waiting for peer" }), _jsxs("span", { className: "ml-1 inline-flex items-center", children: [_jsx("span", { className: "w-1.5 h-1.5 bg-white/80 rounded-full animate-bounce", style: { animationDelay: '0ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce ml-1", style: { animationDelay: '150ms' } }), _jsx("span", { className: "w-1.5 h-1.5 bg-white/60 rounded-full animate-bounce ml-1", style: { animationDelay: '300ms' } })] })] })) })] })] }), _jsxs("div", { className: "mt-8 flex items-center justify-center gap-3 flex-wrap", children: [_jsx("button", { onClick: toggleCamera, "aria-label": "Open Video", title: "Open Video", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, "aria-label": "Open Audio", title: "Open Audio", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${!micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) }), _jsx("button", { onClick: () => setChatOpen(v => !v), "aria-label": "Open Messages", title: "Open Messages", disabled: participants < 2, className: `h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z" }) }) }), _jsx("button", { onClick: chooseMedia, "aria-label": "Choose Media to Stream", title: "Choose Media to Stream", disabled: participants < 2, className: `h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`, children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z" }) }) }), _jsx("button", { onClick: endRoom, "aria-label": "End Room", title: "End Room", className: "h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-red-400/60 hover:scale-110 transition text-red-300 flex items-center justify-center", children: _jsx("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "currentColor", "aria-hidden": "true", children: _jsx("path", { d: "M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2V8h2zm0-8h-2V6h2z" }) }) })] }), chatOpen && (_jsxs("div", { className: "mt-8 mx-auto max-w-2xl w-full rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-0 text-white shadow-2xl overflow-hidden", children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 bg-gradient-to-r from-cyan-500/15 via-transparent to-pink-500/15 border-b border-white/10", children: [_jsxs("div", { className: "text-sm text-white/90 flex items-center gap-2", children: [_jsx("span", { className: "inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" }), "Messages"] }), _jsx("div", { className: "text-xs text-white/70", children: peerPresent ? 'Connected' : 'Waiting for peer…' })] }), _jsxs("div", { id: "chatScroll", className: "h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03]", children: [chat.map(m => (_jsxs("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: [!m.fromSelf && _jsx("div", { className: "mr-2 w-6 h-6 rounded-full bg-pink-400/40 border border-pink-300/40 flex items-center justify-center text-xs", children: "\uD83D\uDC64" }), _jsxs("div", { className: `max-w-[78%] rounded-2xl px-4 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed", children: m.text }), _jsx("div", { className: "mt-1 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }), m.fromSelf && _jsx("div", { className: "ml-2 w-6 h-6 rounded-full bg-cyan-400/40 border border-cyan-300/40 flex items-center justify-center text-xs", children: "\uD83E\uDDD1" })] }, m.id))), chat.length === 0 && (_jsx("div", { className: "text-xs text-white/60 text-center py-6", children: "No messages yet. Say hello!" }))] }), _jsxs("div", { className: "px-4 py-3 bg-gradient-to-r from-cyan-500/10 via-transparent to-pink-500/10 border-t border-white/10 flex items-center gap-3", children: [_jsxs("div", { className: "relative flex-1", children: [_jsx("input", { ref: msgInputRef, value: msg, onChange: e => setMsg(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && !e.shiftKey) {
                                                         e.preventDefault();
                                                         if (msg.trim()) {
                                                             sendChat(msg.trim());

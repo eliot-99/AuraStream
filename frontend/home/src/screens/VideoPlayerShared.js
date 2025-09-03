@@ -1,5 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 // Icons (simple inline SVGs)
 const Icon = {
@@ -37,6 +37,17 @@ function formatTime(t) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 export default function VideoPlayer({ onBack, src }) {
+    // Identify streamer: only the peer who initiated navigation controls playback
+    const isStreamer = React.useMemo(() => {
+        try {
+            const id = window.sharedSocket?.id || '';
+            const sid = sessionStorage.getItem('shared:streamerId') || '';
+            return !!id && id === sid;
+        }
+        catch {
+            return false;
+        }
+    }, []);
     const videoRef = useRef(null);
     const [playing, setPlaying] = useState(false);
     const [progress, setProgress] = useState({ cur: 0, dur: 0 });
@@ -259,7 +270,8 @@ export default function VideoPlayer({ onBack, src }) {
         // Join socket room for control sync
         try {
             const { io } = require('socket.io-client');
-            const s = io('/', { transports: ['websocket'] });
+            const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+            const s = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io', withCredentials: true });
             ;
             window.sharedSocket = s;
             s.on('connect', () => {
@@ -275,8 +287,31 @@ export default function VideoPlayer({ onBack, src }) {
                 }
             });
             // Receive chat messages into the local drawer list
-            s.on('sync', (payload) => {
+            s.on('sync', async (payload) => {
                 try {
+                    if (payload && payload.type === 'playback') {
+                        const v = videoRef.current;
+                        if (!v)
+                            return;
+                        if (payload.action === 'play') {
+                            try {
+                                await v.play();
+                                setPlaying(true);
+                            }
+                            catch { }
+                        }
+                        if (payload.action === 'pause') {
+                            try {
+                                v.pause();
+                                setPlaying(false);
+                            }
+                            catch { }
+                        }
+                        if (payload.action === 'seek' && typeof payload.time === 'number') {
+                            v.currentTime = payload.time;
+                        }
+                        return;
+                    }
                     if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
                         window.__sharedChat = [
                             ...(window.__sharedChat || []),
@@ -373,10 +408,11 @@ export default function VideoPlayer({ onBack, src }) {
     const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
     // Controls
     const togglePlay = async () => {
+        if (!isStreamer)
+            return;
         const v = videoRef.current;
         try {
             if (v.paused) {
-                // Pause any other media elements to prevent duplicate playback
                 try {
                     const nodes = Array.from(document.querySelectorAll('audio, video'));
                     nodes.forEach(n => { if (n !== v) {
@@ -411,8 +447,12 @@ export default function VideoPlayer({ onBack, src }) {
         }
         catch { }
     };
-    const handleSeek = (t) => { const v = videoRef.current; if (!v)
-        return; v.currentTime = Math.max(0, Math.min(v.duration || t, t)); };
+    const handleSeek = (t) => { if (!isStreamer)
+        return; const v = videoRef.current; if (!v)
+        return; const nt = Math.max(0, Math.min(v.duration || t, t)); v.currentTime = nt; try {
+        window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt });
+    }
+    catch { } };
     const handleSkip = (d) => { const v = videoRef.current; if (!v)
         return; handleSeek((v.currentTime || 0) + d); };
     const enterFS = async () => { const el = videoRef.current; try {

@@ -13,6 +13,7 @@ import CreateRoom from './screens/CreateRoom';
 import ForgotPassword from './screens/ForgotPassword';
 import AudioPlayerShared from './screens/AudioPlayerShared';
 import VideoPlayerShared from './screens/VideoPlayerShared';
+import About from './screens/About';
 function App() {
     const [screen, setScreen] = React.useState('home');
     const [media, setMedia] = React.useState(null);
@@ -41,6 +42,9 @@ function App() {
             else if (location.hash === '#/video-shared') {
                 setScreen('video-shared');
             }
+            else if (location.hash === '#/about') {
+                setScreen('about');
+            }
             else if (location.hash === '#/home' || location.hash === '') {
                 setScreen('home');
             }
@@ -51,6 +55,9 @@ function App() {
     }, []);
     if (screen === 'home') {
         return _jsx(Home, { onStartSolo: () => setScreen('solo') });
+    }
+    if (screen === 'about') {
+        return _jsx(About, {});
     }
     if (screen === 'auth') {
         return _jsx(Auth, {});

@@ -12,9 +12,10 @@ import CreateRoom from './screens/CreateRoom';
 import ForgotPassword from './screens/ForgotPassword';
 import AudioPlayerShared from './screens/AudioPlayerShared';
 import VideoPlayerShared from './screens/VideoPlayerShared';
+import About from './screens/About';
 
 function App() {
-  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'audio-shared' | 'video-shared'>('home');
+  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'audio-shared' | 'video-shared' | 'about'>('home');
   const [media, setMedia] = React.useState<{ url: string; name: string; kind: 'audio' | 'video' } | null>(null);
 
   // Simple hash-router to reach Auth before Together
@@ -35,6 +36,8 @@ function App() {
         setScreen('audio-shared');
       } else if (location.hash === '#/video-shared') {
         setScreen('video-shared');
+      } else if (location.hash === '#/about') {
+        setScreen('about');
       } else if (location.hash === '#/home' || location.hash === '') {
         setScreen('home');
       }
@@ -46,6 +49,9 @@ function App() {
 
   if (screen === 'home') {
     return <Home onStartSolo={() => setScreen('solo')} />;
+  }
+  if (screen === 'about') {
+    return <About />;
   }
   if (screen === 'auth') {
     return <Auth />;

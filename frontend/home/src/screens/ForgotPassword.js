@@ -19,7 +19,8 @@ export default function ForgotPassword() {
         setError(null);
         setBusy(true);
         try {
-            const res = await fetch('/api/users/forgot/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usernameOrEmail }) });
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+            const res = await fetch(`${API_BASE}/api/users/forgot/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usernameOrEmail }) });
             const data = await res.json().catch(() => ({}));
             if (!res.ok)
                 throw new Error(data?.error || 'Failed to send OTP');
@@ -37,7 +38,8 @@ export default function ForgotPassword() {
         setError(null);
         setBusy(true);
         try {
-            const res = await fetch('/api/users/forgot/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usernameOrEmail, otp }) });
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+            const res = await fetch(`${API_BASE}/api/users/forgot/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ usernameOrEmail, otp }) });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data?.resetToken)
                 throw new Error(data?.error || 'Invalid OTP');
@@ -55,7 +57,8 @@ export default function ForgotPassword() {
         setError(null);
         setBusy(true);
         try {
-            const res = await fetch('/api/users/forgot/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resetToken, newPassword }) });
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+            const res = await fetch(`${API_BASE}/api/users/forgot/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resetToken, newPassword }) });
             const data = await res.json().catch(() => ({}));
             if (!res.ok)
                 throw new Error(data?.error || 'Failed to reset password');

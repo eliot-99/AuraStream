@@ -48,11 +48,37 @@ export default function Home({ onStartSolo }: HomeProps) {
         Encrypted & Secure
       </div>
 
-      {/* Top-left logo with tooltip */}
+      {/* Top-left logo */}
       <div className="fixed top-4 left-4">
-        <button aria-label="AuraStream Privacy Policy" className="text-white/90 hover:text-white text-sm" title="Privacy Policy">
+        <button aria-label="AuraStream" className="text-white/90 hover:text-white text-sm" title="AuraStream">
           AuraStream
         </button>
+      </div>
+
+      {/* Center-bottom About link */}
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20">
+        <a
+          href="#/about"
+          onClick={(e) => { e.preventDefault(); location.hash = '#/about'; }}
+          className="text-white/90 hover:text-white text-sm md:text-base"
+        >
+          {/* Shiny label without underline */}
+          <span className="inline-block">
+            {/* Using ShinyText inline to avoid extra import here */}
+            <span
+              style={{
+                backgroundImage: 'linear-gradient(110deg, rgba(255,255,255,0.2) 0%, rgba(255,255,255,1) 20%, rgba(255,255,255,0.2) 40%)',
+                backgroundSize: '200% 100%',
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                color: 'transparent',
+                animation: 'shine 3s linear infinite',
+              }}
+            >
+              About this project
+            </span>
+          </span>
+        </a>
       </div>
 
       {/* Bottom-right clock + link */}

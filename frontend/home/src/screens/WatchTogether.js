@@ -47,7 +47,8 @@ function useProfile() {
             setLoading(false);
             return;
         }
-        fetch('/api/users/me', { headers: { Authorization: `Bearer ${token}` } })
+        const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+        fetch(`${API_BASE}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } })
             .then(async (r) => {
             if (!r.ok)
                 throw new Error(`status:${r.status}`);
@@ -107,8 +108,8 @@ export default function WatchTogether() {
             return;
         }
         try {
-            // Use relative API paths so Vite proxy works over ngrok on mobile as well
-            const API_BASE = '';
+            // Use env-based API base in production; relative path in dev still works via proxy
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
             // Derive verifier same as CreateRoom
             const enc = new TextEncoder();
             const salt = enc.encode(`aurastream:${name}`);
@@ -119,6 +120,11 @@ export default function WatchTogether() {
             for (let i = 0; i < bytes.length; i++)
                 b64 += String.fromCharCode(bytes[i]);
             const passVerifier = btoa(b64);
+            // Persist verifier so SharedRoom can refresh access tokens if needed
+            try {
+                sessionStorage.setItem(`room:${name}:pv`, passVerifier);
+            }
+            catch { }
             const r = await fetch(`${API_BASE}/api/rooms/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, passVerifier }) });
             const j = await r.json();
             if (r.status === 404) {

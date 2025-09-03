@@ -40,6 +40,7 @@ const allowedOrigins = (process.env.CORS_ORIGIN || '*')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+const isProd = process.env.NODE_ENV === 'production';
 const io = new SocketIOServer(server, {
   cors: {
     origin: (origin, cb) => {
@@ -49,14 +50,19 @@ const io = new SocketIOServer(server, {
         return corsMatcher(origin, allowedOrigins) ? cb(null, true) : cb(new Error('CORS blocked'));
       } catch { return cb(null, true); }
     },
-    methods: ['GET','POST'],
+    methods: ['GET', 'POST'],
     credentials: true,
   },
-  cookie: { name: 'io', sameSite: 'none', secure: true, path: '/socket.io' },
+  cookie: {
+    name: 'io',
+    sameSite: isProd ? 'none' : 'lax',  // 'none' for cross-origin in prod
+    secure: isProd,  // Only secure in HTTPS
+    path: '/socket.io'
+  },
   path: '/socket.io',
-  transports: ['websocket','polling'], // allow fallback to HTTP long-polling
-  pingInterval: 25000,
-  pingTimeout: 60000,
+  transports: ['websocket', 'polling'], // Allow fallback to HTTP long-polling
+  pingInterval: 30000, // Increased for prod stability
+  pingTimeout: 120000, // Increased for prod stability
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
 });
 
@@ -217,15 +223,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
-    if (roomName) {
-      removeFromRoomState(roomName, socket.id);
-      const members = io.sockets.adapter.rooms.get(roomName);
-      const count = members?.size || 0;
-      io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
-    }
-    // Always log disconnect reason for debugging (ping timeout, transport close, etc.)
-    console.log('[SOCKET][disconnect]', { id: socket.id, reason });
-  });
+  if (roomName) {
+    removeFromRoomState(roomName, socket.id);
+    const members = io.sockets.adapter.rooms.get(roomName);
+    const count = members?.size || 0;
+    io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
+  }
+  console.log('[SOCKET][disconnect]', { id: socket.id, reason, transport: (socket as any)?.conn?.transport?.name, description: (socket as any)?.conn?.closeReason ?? (socket as any)?.conn?.closingReason ?? 'unknown' });
+});
 });
 
 // Express CORS to match Socket.IO (supports wildcards like https://*.vercel.app)
@@ -257,6 +262,13 @@ app.use(cors({
   },
   credentials: true
 }));
+app.use((req, res, next) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd && req.headers['x-forwarded-proto'] !== 'https') {
+    return res.redirect(301, `https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
 // Security headers (CSP optional; can be provided via env)
 app.use(helmet({ contentSecurityPolicy: false }));
 if (process.env.CSP_HEADER) app.use((_, res, next) => { res.setHeader('Content-Security-Policy', process.env.CSP_HEADER as string); next(); });
@@ -294,7 +306,7 @@ app.get('/health', (_req, res) => {
 // WebRTC ICE config endpoint (STUN/TURN)
 app.get('/api/webrtc/config', (_req, res) => {
   // Supports both *_URLS and single *_SERVER envs, and TURN_USER/TURN_PASS or TURN_USERNAME/TURN_CREDENTIAL
-  const stunRaw = process.env.STUN_URLS || process.env.STUN_SERVER || 'stun:stun.l.google.com:19302';
+  const stunRaw = process.env.STUN_URLS || process.env.STUN_SERVER || 'stun:stun.l.google.com:19302,stun:stun.relay.metered.ca:80';
   const turnRaw = process.env.TURN_URLS || process.env.TURN_SERVER || '';
   const turnUser = process.env.TURN_USER || process.env.TURN_USERNAME || '';
   const turnPass = process.env.TURN_PASS || process.env.TURN_CREDENTIAL || '';
@@ -302,27 +314,39 @@ app.get('/api/webrtc/config', (_req, res) => {
   const stun = stunRaw.split(',').map(s => s.trim()).filter(Boolean);
   let turns = turnRaw.split(',').map(s => s.trim()).filter(Boolean);
 
-  // If only a single non-TLS TURN is provided, add a TLS variant as well for restrictive networks
+  // Auto-add missing variants for reliability (TCP, TLS)
   try {
-    const addTls: string[] = [];
+    const addVariants = [];
     for (const u of turns) {
-      if (/^turn:/.test(u) && !/^turns:/.test(u)) {
-        try {
-          const url = new NodeURL(u.replace(/^turn:/, 'turn://'));
-          const host = url.hostname;
-          // Prefer 443 for TLS
-          addTls.push(`turns:${host}:443?transport=tcp`);
-        } catch {}
+      const url = new NodeURL(u.replace(/^turns?:/, 'turn://'));
+      const host = url.hostname;
+      const port = url.port || '3478';
+      const isTls = u.startsWith('turns:');
+      const hasTcp = u.includes('?transport=tcp');
+
+      // Add TCP if missing
+      if (!hasTcp && !u.includes('?transport=udp')) {
+        addVariants.push(`${isTls ? 'turns' : 'turn'}:${host}:${port}?transport=tcp`);
+      }
+
+      // Add TLS on 443 if non-TLS
+      if (!isTls) {
+        addVariants.push(`turns:${host}:443?transport=tcp`);
+        addVariants.push(`turn:${host}:443`);
       }
     }
-    turns = [...new Set([...turns, ...addTls])];
-  } catch {}
+    turns = [...new Set([...turns, ...addVariants])]; // Dedupe
+  } catch (e: any) {
+    console.error('[ICE][AUTO-ADD][ERROR]', e?.message || e);
+  }
 
-  const iceServers: any[] = [];
+  const iceServers = [];
   if (stun.length) iceServers.push(...stun.map(u => ({ urls: u })));
   if (turns.length && turnUser && turnPass) {
-    iceServers.push({ urls: turns, username: turnUser, credential: turnPass });
+    iceServers.push(...turns.map(url => ({ urls: url, username: turnUser, credential: turnPass })));
   }
+
+  console.log('[ICE][CONFIG]', { stunCount: stun.length, turnCount: turns.length, hasCreds: !!turnUser && !!turnPass });
   res.json({ iceServers });
 });
 
@@ -475,12 +499,49 @@ app.get('/api/rooms/share', async (req, res) => {
 
 // Minimal WebRTC signaling scaffold
 app.get('/api/webrtc/config', (_req, res) => {
-  const iceServers = [
-    ...(process.env.STUN_SERVER ? [{ urls: process.env.STUN_SERVER }] : []),
-    ...(process.env.TURN_SERVER ? [{ urls: process.env.TURN_SERVER, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL }] : [])
-  ];
-  if (!iceServers.length) iceServers.push({ urls: 'stun:stun.l.google.com:19302' });
-  res.json({ ok: true, iceServers });
+  // Supports both *_URLS and single *_SERVER envs, and TURN_USER/TURN_PASS or TURN_USERNAME/TURN_CREDENTIAL
+  const stunRaw = process.env.STUN_URLS || process.env.STUN_SERVER || 'stun:stun.l.google.com:19302,stun:stun.relay.metered.ca:80';
+  const turnRaw = process.env.TURN_URLS || process.env.TURN_SERVER || '';
+  const turnUser = process.env.TURN_USER || process.env.TURN_USERNAME || '';
+  const turnPass = process.env.TURN_PASS || process.env.TURN_CREDENTIAL || '';
+
+  const stun = stunRaw.split(',').map(s => s.trim()).filter(Boolean);
+  let turns = turnRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+  // Auto-add missing variants for reliability (TCP, TLS)
+  try {
+    const addVariants = [];
+    for (const u of turns) {
+      const url = new NodeURL(u.replace(/^turns?:/, 'turn://'));
+      const host = url.hostname;
+      const port = url.port || '3478';
+      const isTls = u.startsWith('turns:');
+      const hasTcp = u.includes('?transport=tcp');
+
+      // Add TCP if missing
+      if (!hasTcp && !u.includes('?transport=udp')) {
+        addVariants.push(`${isTls ? 'turns' : 'turn'}:${host}:${port}?transport=tcp`);
+      }
+
+      // Add TLS on 443 if non-TLS
+      if (!isTls) {
+        addVariants.push(`turns:${host}:443?transport=tcp`);
+        addVariants.push(`turn:${host}:443`);
+      }
+    }
+    turns = [...new Set([...turns, ...addVariants])]; // Dedupe
+  } catch (e: any) {
+    console.error('[ICE][AUTO-ADD][ERROR]', e?.message || e);
+  }
+
+  const iceServers = [];
+  if (stun.length) iceServers.push(...stun.map(u => ({ urls: u })));
+  if (turns.length && turnUser && turnPass) {
+    iceServers.push(...turns.map(url => ({ urls: url, username: turnUser, credential: turnPass })));
+  }
+
+  console.log('[ICE][CONFIG]', { stunCount: stun.length, turnCount: turns.length, hasCreds: !!turnUser && !!turnPass });
+  res.json({ iceServers });
 });
 
 // Simple TURN diagnostics. It will:
@@ -488,73 +549,104 @@ app.get('/api/webrtc/config', (_req, res) => {
 // 2) Optionally attempt relay-only ICE candidate gathering using wrtc (if available)
 app.get('/api/webrtc/turn-test', async (_req, res) => {
   const start = Date.now();
-  const server = process.env.TURN_SERVER || '';
-  const username = process.env.TURN_USERNAME || '';
-  const credential = process.env.TURN_CREDENTIAL || '';
+  const stunRaw = process.env.STUN_URLS || process.env.STUN_SERVER || 'stun:stun.l.google.com:19302,stun:stun.relay.metered.ca:80';
+  const turnRaw = process.env.TURN_URLS || process.env.TURN_SERVER || '';
+  const username = process.env.TURN_USER || process.env.TURN_USERNAME || '';
+  const credential = process.env.TURN_PASS || process.env.TURN_CREDENTIAL || '';
 
-  if (!server) return res.status(200).json({ ok: false, stage: 'missing', message: 'TURN_SERVER not configured' });
+  const stun = stunRaw.split(',').map(s => s.trim()).filter(Boolean);
+  let turns = turnRaw.split(',').map(s => s.trim()).filter(Boolean);
 
-  let host = '';
-  let port = 3478;
-  let scheme = 'turn';
+  // Auto-add variants (same as /api/webrtc/config)
   try {
-    // Support comma-separated urls, pick first
-    const first = (server.split(',')[0] || '').trim();
-    const u = new NodeURL(first.replace(/^turns?:\/\//, match => match));
-    scheme = first.startsWith('turns:') ? 'turns' : 'turn';
-    // If NodeURL failed (because of non-standard turn:), fallback manual parse
-    if (!u.hostname) {
-      const m = first.match(/^turns?:([^:]+):([0-9]+)/i);
-      if (m) { host = m[1]; port = Number(m[2]); }
-    } else {
-      host = u.hostname;
-      port = Number(u.port || (scheme === 'turns' ? 443 : 3478));
+    const addVariants = [];
+    for (const u of turns) {
+      const url = new NodeURL(u.replace(/^turns?:/, 'turn://'));
+      const host = url.hostname;
+      const port = url.port || '3478';
+      const isTls = u.startsWith('turns:');
+      const hasTcp = u.includes('?transport=tcp');
+      if (!hasTcp && !u.includes('?transport=udp')) {
+        addVariants.push(`${isTls ? 'turns' : 'turn'}:${host}:${port}?transport=tcp`);
+      }
+      if (!isTls) {
+        addVariants.push(`turns:${host}:443?transport=tcp`);
+        addVariants.push(`turn:${host}:443`);
+      }
     }
-  } catch {}
-
-  if (!host || !Number.isFinite(port)) {
-    return res.status(200).json({ ok: false, stage: 'parse', message: 'Failed to parse TURN_SERVER host/port', server });
+    turns = [...new Set([...turns, ...addVariants])];
+  } catch (e: any) {
+    console.error('[ICE][TURN-TEST][AUTO-ADD][ERROR]', e?.message || e);
   }
 
-  // Stage 1: TCP/TLS reachability
-  const reach = await new Promise(resolve => {
-    const timeout = setTimeout(() => resolve({ ok: false, message: 'timeout' }), 4000);
-    const onDone = (val: any) => { clearTimeout(timeout); resolve(val); };
-    if (scheme === 'turns') {
-      const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => onDone({ ok: true, tlsAuthorized: socket.authorized }));
-      socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
-    } else {
-      const socket = net.createConnection({ host, port }, () => onDone({ ok: true }));
-      socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
+  // Stage 1: TCP/TLS reachability for each server
+  const reachResults = await Promise.all(turns.map(async server => {
+    let host = '';
+    let port = 3478;
+    let scheme = 'turn';
+    try {
+      const first = server.split(',')[0].trim();
+      const u = new NodeURL(first.replace(/^turns?:\/\//, match => match));
+      scheme = first.startsWith('turns:') ? 'turns' : 'turn';
+      if (!u.hostname) {
+        const m = first.match(/^turns?:([^:]+):([0-9]+)/i);
+        if (m) { host = m[1]; port = Number(m[2]); }
+      } else {
+        host = u.hostname;
+        port = Number(u.port || (scheme === 'turns' ? 443 : 3478));
+      }
+    } catch {
+      return { server, ok: false, stage: 'parse', message: 'Failed to parse server' };
     }
-  });
 
-  const result: any = { ok: !!(reach as any).ok, stage: 'tcp', server, host, port, scheme, elapsedMs: Date.now() - start, reach };
+    type Reach = { ok: boolean; message?: string; tlsAuthorized?: boolean };
+    const reach = await new Promise<Reach>(resolve => {
+      const timeout = setTimeout(() => resolve({ ok: false, message: 'timeout' }), 4000);
+      const onDone = (val: Reach) => { clearTimeout(timeout); resolve(val); };
+      if (scheme === 'turns') {
+        const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => onDone({ ok: true, tlsAuthorized: socket.authorized }));
+        socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
+      } else {
+        const socket = net.createConnection({ host, port }, () => onDone({ ok: true }));
+        socket.on('error', (e) => onDone({ ok: false, message: String((e as any)?.message || e) }));
+      }
+    });
+    return { server, ok: reach.ok, stage: 'tcp', host, port, scheme, reach };
+  }));
 
-  // Stage 2: Optional ICE relay probe using wrtc if present
+  // Stage 2: ICE relay probe for each server (if wrtc available)
+  const iceResults: { server: string; iceProbe: any }[] = [];
   try {
-    // Dynamically import to avoid bundling when not installed
-    const wrtc = await import('wrtc').catch(() => null as any);
-    if (wrtc && wrtc.RTCPeerConnection) {
-      const pc: any = new wrtc.RTCPeerConnection({ iceServers: [{ urls: server, username, credential }], iceTransportPolicy: 'relay' });
-      let gotRelay = false;
-      pc.onicecandidate = (e: any) => { if (e?.candidate && / typ relay /i.test(e.candidate.candidate || '')) gotRelay = true; };
-      try { pc.addTransceiver('audio'); } catch {}
-      const offer = await pc.createOffer({ offerToReceiveAudio: true } as any);
-      await pc.setLocalDescription(offer);
-      await new Promise(r => setTimeout(r, 2500));
-      try { pc.close(); } catch {}
-      result.iceProbe = { attempted: true, relayCandidate: gotRelay };
-      if (!gotRelay) { result.ok = false; result.stage = 'ice'; result.message = 'No relay candidates gathered'; }
+    const wrtc = await import('wrtc').catch(() => null);
+    if (wrtc && (wrtc as any).RTCPeerConnection) {
+      for (const server of turns) {
+        const pc = new (wrtc as any).RTCPeerConnection({ iceServers: [{ urls: server, username, credential }], iceTransportPolicy: 'relay' });
+        let gotRelay = false;
+        pc.onicecandidate = (e: any) => { if (e?.candidate && / typ relay /i.test(e.candidate.candidate || '')) gotRelay = true; };
+        try { pc.addTransceiver('audio'); } catch {}
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        await new Promise(r => setTimeout(r, 2500));
+        try { pc.close(); } catch {}
+        iceResults.push({ server, iceProbe: { attempted: true, relayCandidate: gotRelay } });
+      }
     } else {
-      result.iceProbe = { attempted: false, reason: 'wrtc not available' };
+      iceResults.push(...turns.map(server => ({ server, iceProbe: { attempted: false, reason: 'wrtc not available' } })));
     }
   } catch (e: any) {
-    result.iceProbe = { attempted: true, error: String(e?.message || e) };
-    result.ok = false; result.stage = 'ice';
+    iceResults.push(...turns.map(server => ({ server, iceProbe: { attempted: true, error: String(e?.message || e) } })));
   }
 
-  res.status(200).json(result);
+  const results = reachResults.map(r => ({
+    ...r,
+    iceProbe: iceResults.find(ir => ir.server === r.server)?.iceProbe || { attempted: false, reason: 'not tested' }
+  }));
+  res.status(200).json({
+    ok: results.every(r => r.ok && r.iceProbe.relayCandidate),
+    results,
+    stunServers: stun,
+    elapsedMs: Date.now() - start
+  });
 });
 
 app.post('/api/webrtc/signal', async (req, res) => {

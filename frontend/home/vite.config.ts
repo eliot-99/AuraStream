@@ -23,12 +23,16 @@ export default defineConfig({
     strictPort: true,
     https: false, // In real deployment, serve via HTTPS/WSS at the proxy/CDN level
     cors: true,
-    // Stabilize HMR/WebSocket when accessed via public IP/port forwarding
-    hmr: {
+    // HMR config: use external host only when VITE_PUBLIC_HOST is set; otherwise use default local HMR
+    hmr: process.env.VITE_PUBLIC_HOST ? {
       protocol: 'wss',
-      host: process.env.VITE_PUBLIC_HOST || '76a077bc712f.ngrok-free.app',
+      host: process.env.VITE_PUBLIC_HOST,
       port: 443,
       clientPort: 443,
+    } : true,
+    // Avoid reload loops if a separate build updates dist
+    watch: {
+      ignored: ['**/dist/**']
     },
     proxy: {
       '/api': {

@@ -54,6 +54,16 @@ export default function SharedRoom() {
   const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
   const [turnStatus, setTurnStatus] = useState<'unknown'|'ok'|'fail'|'missing'>('unknown');
   const [turnMessage, setTurnMessage] = useState<string | null>(null);
+  // Ephemeral toast messages
+  const [toasts, setToasts] = useState<{ id: string; text: string; type?: 'info'|'error'|'success' }[]>([]);
+  const pushToast = (text: string, type: 'info'|'error'|'success' = 'info') => {
+    const id = crypto.randomUUID?.() || Math.random().toString(36);
+    setToasts(t => [...t, { id, text, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+  };
+  const dismissToast = (id: string) => setToasts(t => t.filter(x => x.id !== id));
+  // Connection banner
+  const [connUnstable, setConnUnstable] = useState(false);
   const hostLevelRef = useRef(0);
   const peerLevelRef = useRef(0);
   const micMutedRef = useRef(false);
@@ -108,6 +118,16 @@ export default function SharedRoom() {
       socket.emit('handshake', { room, token, accessToken, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
       // Immediately ask for current room state to synchronize participant count
       socket.emit('sync', { type: 'ping' });
+      // Flush any queued signals from storage
+      try {
+        const raw = sessionStorage.getItem(`room:${room}:signalQueue`);
+        const queued = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(queued) && queued.length) {
+          queued.forEach((m: any) => socket.emit('signal', m));
+          sessionStorage.removeItem(`room:${room}:signalQueue`);
+          signalQueueRef.current = [];
+        }
+      } catch {}
     });
 
     async function derivePassVerifier(name: string, password: string) {
@@ -205,6 +225,19 @@ export default function SharedRoom() {
 
     socket.on('signal', async (payload: any) => { await handleSignal(payload); });
 
+    // On reconnect, flush queued signals if any
+    socket.on('reconnect', () => {
+      try {
+        const raw = sessionStorage.getItem(`room:${room}:signalQueue`);
+        const queued = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(queued) && queued.length) {
+          queued.forEach((m: any) => socket.emit('signal', m));
+          sessionStorage.removeItem(`room:${room}:signalQueue`);
+          signalQueueRef.current = [];
+        }
+      } catch {}
+    });
+
     socket.on('control', (payload: any) => {
       if (!payload || typeof payload !== 'object') return;
       // Do not mutate local device state based on peer's state to avoid unintended UI toggles
@@ -247,21 +280,33 @@ export default function SharedRoom() {
   }, [room]);
 
   useEffect(() => { (async () => {
-    try {
-      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-      const r = await fetch(`${API_BASE}/api/webrtc/config`);
-      if (r.ok) {
-        const j = await r.json();
-        if (j?.iceServers) {
-          setIceServers(j.iceServers);
-          validateTurn(j.iceServers).catch(()=>{});
+    // Fetch ICE config with retry/backoff
+    const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+    let attempt = 0; let ok = false; let lastServers: IceServer[] | null = null;
+    while (attempt < 3 && !ok) {
+      try {
+        const r = await fetch(`${API_BASE}/api/webrtc/config`);
+        if (r.ok) {
+          const j = await r.json();
+          if (j?.iceServers) {
+            lastServers = j.iceServers;
+            setIceServers(j.iceServers);
+            ok = true;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+      if (!ok) await new Promise(res => setTimeout(res, 500 * Math.pow(2, attempt++)));
+    }
+    if (lastServers) {
+      validateTurn(lastServers).catch(()=>{});
+      // Revalidate TURN every ~60s to detect outages
+      const iv = setInterval(() => validateTurn(lastServers!).catch(()=>{}), 60000);
+      window.addEventListener('beforeunload', () => clearInterval(iv));
+    }
+
     try {
       const token = localStorage.getItem('auth');
       if (token) {
-        const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
         const me = await fetch(`${API_BASE}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } });
         if (!me.ok) throw new Error('unauth');
         const mj = await me.json();
@@ -292,6 +337,10 @@ export default function SharedRoom() {
   const makingOfferRef = useRef(false);
   const ignoreOfferRef = useRef(false);
   const politeRef = useRef(false);
+  // Queue for misordered ICE candidates until remoteDescription is set
+  const candidateQueueRef = useRef<RTCIceCandidateInit[]>([]);
+  // Queue for signaling messages when socket is disconnected
+  const signalQueueRef = useRef<any[]>([]);
 
   async function validateTurn(servers: IceServer[]) {
     try {
@@ -321,18 +370,24 @@ export default function SharedRoom() {
     pcRef.current = pc;
 
     // Log ICE state to help diagnose disconnections
-    pc.oniceconnectionstatechange = () => {
+    pc.oniceconnectionstatechange = async () => {
       const st = pc.iceConnectionState;
       console.log('[WEBRTC][ice]', st);
+      // Toggle unstable banner
+      setConnUnstable(st === 'failed' || st === 'disconnected');
       if (st === 'failed' || st === 'disconnected') {
-        // Try ICE restart
+        try { pc.restartIce(); } catch {}
+        // Force a full renegotiation with iceRestart flag
         try {
-          pc.restartIce();
+          makingOfferRef.current = true;
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp });
         } catch {}
-        // Also re-offer
-        try {
-          pc.setLocalDescription();
-        } catch {}
+        finally { makingOfferRef.current = false; }
+      }
+      if (st === 'connected' || st === 'completed') {
+        setConnUnstable(false);
       }
     };
 
@@ -400,32 +455,74 @@ export default function SharedRoom() {
 
     if (payload.type === 'offer') {
       const offer = { type: 'offer' as const, sdp: payload.sdp };
-      const readyForOffer = !makingOfferRef.current && (pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer');
+      const stableOrHaveLocal = pc.signalingState === 'stable' || pc.signalingState === 'have-local-offer';
+      const readyForOffer = !makingOfferRef.current && stableOrHaveLocal;
+      // Polite peers should not ignore offers; they will rollback if needed
       ignoreOfferRef.current = !readyForOffer && !politeRef.current;
       if (ignoreOfferRef.current) return;
       try {
+        if (pc.signalingState !== 'stable') {
+          // Rollback our local description to accept the remote offer
+          await pc.setLocalDescription({ type: 'rollback' } as any);
+        }
         await pc.setRemoteDescription(offer);
+        // Apply any queued ICE candidates that arrived early
+        while (candidateQueueRef.current.length) {
+          const c = candidateQueueRef.current.shift()!;
+          try { await pc.addIceCandidate(c); } catch {}
+        }
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         sendSignal({ type: 'answer', sdp: answer.sdp });
-      } catch {}
+      } catch (err) {
+        console.warn('[SIGNAL][offer][error]', (err as any)?.message || err);
+      }
       return;
     }
 
     if (payload.type === 'answer') {
-      try { await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp }); } catch {}
+      try { await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp }); } catch (err) {
+        console.warn('[SIGNAL][answer][error]', (err as any)?.message || err);
+      }
       return;
     }
 
     if (payload.type === 'ice-candidate' && payload.candidate) {
-      try { await pc.addIceCandidate(payload.candidate); } catch (e) {
-        // If addIceCandidate fails due to state, queue until remoteDescription is set
-        try {
-          await new Promise(res => setTimeout(res, 150));
-          await pc.addIceCandidate(payload.candidate);
-        } catch {}
+      if (!pc.remoteDescription) {
+        // Queue until we have a remote description
+        candidateQueueRef.current.push(payload.candidate);
+        return;
+      }
+      try { await pc.addIceCandidate(payload.candidate); } catch (err) {
+        console.warn('[SIGNAL][candidate][error]', (err as any)?.message || err);
       }
     }
+  }
+
+  async function httpSignalWithRetry(body: any, maxAttempts = 4) {
+    const senderId = socketRef.current?.id;
+    const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+    const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
+    let attempt = 0; let lastErr: any = null;
+    while (attempt < maxAttempts) {
+      try {
+        const r = await fetch(`${API_BASE}/api/webrtc/signal`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room, payload: body, senderId, accessToken })
+        });
+        if (r.ok) return true;
+        lastErr = new Error(`HTTP ${r.status}`);
+      } catch (e) { lastErr = e; }
+      // Backoff: 300ms, 600ms, 1200ms, 2400ms
+      const delay = 300 * Math.pow(2, attempt);
+      await new Promise(res => setTimeout(res, delay));
+      attempt++;
+    }
+    console.warn('[SIGNAL][HTTP][retry-failed]', (lastErr as any)?.message || lastErr);
+    // Toast on failure
+    pushToast('Signaling retry failed, waiting for socket reconnect', 'error');
+    return false;
   }
 
   function sendSignal(payload: any) {
@@ -435,19 +532,32 @@ export default function SharedRoom() {
     if (socket && socket.connected) {
       socket.emit('signal', body);
     } else {
-      // Fallback via HTTP (rare) with auth
-      const senderId = socketRef.current?.id;
-      const API_BASE = (import.meta as any).env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-      const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
-      fetch(`${API_BASE}/api/webrtc/signal`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room, payload: body, senderId, accessToken })
-      }).catch(()=>{});
+      // Queue the signal and try HTTP fallback with retries
+      try { signalQueueRef.current.push(body); } catch {}
+      try { sessionStorage.setItem(`room:${room}:signalQueue`, JSON.stringify(signalQueueRef.current.slice(-50))); } catch {}
+      httpSignalWithRetry(body).catch(()=>{});
     }
   }
 
-  async function maybeNegotiate(_reason: string) { ensurePC(); }
+  async function maybeNegotiate(reason: string) {
+    const pc = ensurePC();
+    if (isNegotiatingRef.current) return;
+    // Proactively create offer when stable or when ICE is stalled
+    const shouldOffer = pc.signalingState === 'stable' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected';
+    if (!shouldOffer) return;
+    try {
+      isNegotiatingRef.current = true;
+      makingOfferRef.current = true;
+      const offer = await pc.createOffer({ iceRestart: pc.iceConnectionState === 'failed' });
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: 'offer', sdp: pc.localDescription?.sdp, reason });
+    } catch (err) {
+      console.warn('[NEGOTIATE][error]', (err as any)?.message || err);
+    } finally {
+      makingOfferRef.current = false;
+      isNegotiatingRef.current = false;
+    }
+  }
 
   async function toggleCamera() {
     if (camOn) {
@@ -489,10 +599,24 @@ export default function SharedRoom() {
       };
       requestAnimationFrame(loop);
     } catch {}
-    
-    if (localTopRef.current) { localTopRef.current.srcObject = ms; localTopRef.current.muted = true; await localTopRef.current.play().catch(()=>{}); }
-    if (localPanelRef.current) { localPanelRef.current.srcObject = ms; localPanelRef.current.muted = true; await localPanelRef.current.play().catch(()=>{}); }
-    const pc = ensurePC(); ms.getTracks().forEach(t => pc.addTrack(t, ms)); await maybeNegotiate('camera-on');
+
+    // Attach to DOM with guards
+    if (localTopRef.current) { try { localTopRef.current.srcObject = ms; localTopRef.current.muted = true; await localTopRef.current.play(); } catch {} }
+    if (localPanelRef.current) { try { localPanelRef.current.srcObject = ms; localPanelRef.current.muted = true; await localPanelRef.current.play(); } catch {} }
+    // Replace existing senders if present to avoid duplicates
+    const pc = ensurePC();
+    try {
+      const senders = pc.getSenders();
+      for (const track of ms.getTracks()) {
+        const kind = track.kind;
+        const sender = senders.find(s => s.track && s.track.kind === kind);
+        if (sender) { try { await sender.replaceTrack(track); } catch {} }
+        else { pc.addTrack(track, ms); }
+      }
+    } catch {
+      ms.getTracks().forEach(t => pc.addTrack(t, ms));
+    }
+    await maybeNegotiate('camera-on');
     socketRef.current?.emit('control', { type: 'state', camOn: true, micMuted });
   }
 
@@ -525,7 +649,15 @@ export default function SharedRoom() {
           requestAnimationFrame(loop);
         } catch {}
         // Attach track to peer connection
-        const pc = ensurePC(); ms.getTracks().forEach(t => pc.addTrack(t, ms));
+        const pc = ensurePC();
+        try {
+          const track = ms.getAudioTracks()[0];
+          const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+          if (sender && track) { await sender.replaceTrack(track); }
+          else { ms.getTracks().forEach(t => pc.addTrack(t, ms)); }
+        } catch {
+          ms.getTracks().forEach(t => pc.addTrack(t, ms));
+        }
         await maybeNegotiate('mic-on');
       } catch {}
     }
@@ -554,7 +686,20 @@ export default function SharedRoom() {
         if (localPanelRef.current) { localPanelRef.current.srcObject = stream; localPanelRef.current.muted = true; }
       }
       const capture: MediaStream | null = (el as any).captureStream?.() || null; if (!capture) { alert('Browser does not support captureStream for local files'); return; }
-      mediaStreamRef.current = capture; stopAllSenders(); const pc = ensurePC(); capture.getTracks().forEach(t => pc.addTrack(t, capture)); await maybeNegotiate('choose-media');
+      mediaStreamRef.current = capture;
+      // Replace existing senders with new capture tracks
+      const pc = ensurePC();
+      try {
+        const senders = pc.getSenders();
+        for (const track of capture.getTracks()) {
+          const sender = senders.find(s => s.track?.kind === track.kind);
+          if (sender) { try { await sender.replaceTrack(track); } catch {} }
+          else { pc.addTrack(track, capture); }
+        }
+      } catch {
+        stopAllSenders(); capture.getTracks().forEach(t => pc.addTrack(t, capture));
+      }
+      await maybeNegotiate('choose-media');
       // Persist role + navigate for both peers
       try { sessionStorage.setItem('shared:mode', mode); sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || '')); } catch {}
       socketRef.current?.emit('sync', { type: 'navigate', mode, url, name: file.name, streamerId: socketRef.current?.id });
@@ -629,6 +774,28 @@ export default function SharedRoom() {
         </button>
       </div>
 
+      {/* Connection unstable ribbon */}
+      {connUnstable && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-50 bg-yellow-500/20 border border-yellow-400/50 text-yellow-100 rounded-xl px-3 py-2 text-sm flex items-center gap-3 backdrop-blur-md">
+          <span>Connection unstable. Trying to recover…</span>
+          <button
+            className="rounded-md border border-yellow-300/60 px-2 py-1 text-xs hover:bg-yellow-400/10"
+            onClick={() => { maybeNegotiate('manual-reoffer').catch(()=>{}); }}>
+            Re-negotiate
+          </button>
+        </div>
+      )}
+
+      {/* Toast container */}
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 space-y-2 w-[92vw] max-w-md">
+        {toasts.map(t => (
+          <div key={t.id} className={`flex items-center justify-between rounded-xl px-3 py-2 text-sm border backdrop-blur-md ${t.type==='error' ? 'bg-red-500/20 border-red-400/40 text-red-100' : t.type==='success' ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-100' : 'bg-white/10 border-white/20 text-white'}`}>
+            <span className="pr-2">{t.text}</span>
+            <button onClick={() => dismissToast(t.id)} className="text-xs opacity-80 hover:opacity-100">Dismiss</button>
+          </div>
+        ))}
+      </div>
+
       <main className="relative z-10 min-h-screen flex items-center justify-center p-6">
         <StarBorder as={"div"} className="max-w-[64rem] w-[92vw] text-center" color="#88ccff" speed="8s" thickness={2}>
           <div className="py-4">
@@ -638,9 +805,19 @@ export default function SharedRoom() {
           </div>
 
           {turnStatus !== 'ok' && turnStatus !== 'unknown' && (
-            <div className={`mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border ${turnStatus==='missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`}
+            <div className={`mx-auto mt-2 max-w-[48rem] rounded-xl px-3 py-2 text-sm border flex items-center justify-between ${turnStatus==='missing' ? 'bg-yellow-500/20 border-yellow-400/40 text-yellow-100' : 'bg-red-500/20 border-red-400/40 text-red-100'}`}
                  role="alert">
-              {turnMessage}
+              <span>{turnMessage}</span>
+              <button
+                onClick={() => {
+                  const servers = iceServers;
+                  setTurnStatus('unknown');
+                  setTurnMessage('Revalidating TURN…');
+                  validateTurn(servers).catch(()=>{ setTurnStatus('fail'); setTurnMessage('TURN validation failed.'); });
+                }}
+                className="ml-3 rounded-md border border-white/30 px-2 py-1 text-xs hover:bg-white/10">
+                Retry
+              </button>
             </div>
           )}
 

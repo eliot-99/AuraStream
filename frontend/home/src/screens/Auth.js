@@ -45,7 +45,8 @@ export default function Auth() {
                 if (!form.avatarFile)
                     throw new Error('Avatar required');
                 const avatarBase64 = await toBase64(form.avatarFile);
-                const res = await fetch('/api/users/register', {
+                const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+                const res = await fetch(`${API_BASE}/api/users/register`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username: form.username, email: form.email, password: form.password, avatarBase64 })
                 });
@@ -56,7 +57,8 @@ export default function Auth() {
                 location.hash = '#/watch-together';
             }
             else {
-                const res = await fetch('/api/users/login', {
+                const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+                const res = await fetch(`${API_BASE}/api/users/login`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username: form.username, password: form.password })
                 });
