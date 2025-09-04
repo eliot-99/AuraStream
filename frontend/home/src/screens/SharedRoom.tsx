@@ -54,6 +54,14 @@ export default function SharedRoom() {
   const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
   const [turnStatus, setTurnStatus] = useState<'unknown'|'ok'|'fail'|'missing'>('unknown');
   const [turnMessage, setTurnMessage] = useState<string | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Reset unread count when chat is opened
+  useEffect(() => {
+    if (chatOpen) {
+      setUnreadCount(0);
+    }
+  }, [chatOpen]);
   // Ephemeral toast messages
   const [toasts, setToasts] = useState<{ id: string; text: string; type?: 'info'|'error'|'success' }[]>([]);
   const pushToast = (text: string, type: 'info'|'error'|'success' = 'info') => {
@@ -299,7 +307,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         if (payload.avatar) { setPeerAvatar(payload.avatar); try { sessionStorage.setItem(`room:${room}:peerAvatar`, payload.avatar); } catch {} }
         return;
       }
-      if (payload.type === 'chat') setChat(c => [...c, { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: payload.text, ts: Date.now() }]);
+      if (payload.type === 'chat') {
+        setChat(c => [...c, { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: payload.text, ts: Date.now() }]);
+        if (!chatOpen) setUnreadCount(prev => prev + 1);
+      }
       if (payload.type === 'playback') {
         const v = remoteTopRef.current || remotePanelRef.current; if (!v) return;
         if (payload.action === 'play') v.play().catch(()=>{});
@@ -878,7 +889,7 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             <div className="flex flex-col items-center">
               <div className="relative">
                 <div className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44">
-                  <video ref={localTopRef} className="h-full w-full object-cover" playsInline muted style={{ display: camOn ? 'block' : 'none' }} />
+                  <video ref={localTopRef} className="h-full w-full object-cover" playsInline muted style={{ display: camOn ? 'block' : 'none', transform: 'scaleX(-1)' }} />
                   {!camOn && (
                     myAvatar ? <img src={myAvatar} alt="Me" className="h-full w-full object-cover" /> : <div className="text-6xl">👤</div>
                   )}
@@ -942,16 +953,23 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
             </button>
             {/* Open Messages */}
-            <button onClick={()=>setChatOpen(v=>!v)} aria-label="Open Messages" title="Open Messages" disabled={participants < 2} className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
+            <button onClick={()=>setChatOpen(v=>!v)} aria-label="Open Messages" title="Open Messages" disabled={participants < 2} className={`relative h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${chatOpen ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'} ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/></svg>
+              {unreadCount > 0 && (
+                <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-semibold shadow-lg">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </div>
+              )}
             </button>
             {/* Choose Media */}
             <button onClick={chooseMedia} aria-label="Choose Media to Stream" title="Choose Media to Stream" disabled={participants < 2} className={`h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-white/30 hover:scale-110 transition text-white flex items-center justify-center ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z"/></svg>
             </button>
             {/* End Room */}
-            <button onClick={endRoom} aria-label="End Room" title="End Room" className="h-12 w-12 rounded-full bg-white/10 backdrop-blur-md border border-red-400/60 hover:scale-110 transition text-red-300 flex items-center justify-center">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10.011 10.011 0 0 0 12 2zm1 14h-2V8h2zm0-8h-2V6h2z"/></svg>
+            <button onClick={endRoom} aria-label="End Call" title="End Call" className="h-12 w-12 rounded-full bg-red-600/90 backdrop-blur-md border border-red-500 hover:scale-110 hover:bg-red-600 transition text-white flex items-center justify-center shadow-lg">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
             </button>
           </div>
 
