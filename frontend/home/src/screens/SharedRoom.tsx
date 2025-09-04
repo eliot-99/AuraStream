@@ -465,29 +465,42 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
       setRemoteHasVideo(!!stream?.getVideoTracks?.().length);
       // Start remote audio level meter for glow (guard once per remote)
       try {
-        if (!(window as any).__peerAnalyser && stream) {
+        if (!(window as any).__peerAnalyser && stream && stream.getAudioTracks().length > 0) {
           const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
           const ctx = new AC();
           const resume = () => { if (ctx.state !== 'running') ctx.resume().catch(()=>{}); window.removeEventListener('click', resume); };
           window.addEventListener('click', resume, { once: true });
           const source = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
-          analyser.fftSize = 1024;
-          (window as any).__peerAnalyser = analyser;
-          const data = new Uint8Array(analyser.fftSize);
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.8;
           source.connect(analyser);
+          (window as any).__peerAnalyser = analyser;
+          const data = new Uint8Array(analyser.frequencyBinCount);
           const loop = () => {
-            analyser.getByteTimeDomainData(data);
-            let sum = 0; for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+            analyser.getByteFrequencyData(data);
+            let sum = 0; 
+            for (let i = 0; i < data.length; i++) { 
+              const v = data[i] / 255; 
+              sum += v * v; 
+            }
             const rms = Math.sqrt(sum / data.length);
-            peerLevelRef.current = Math.min(1, rms * 2.5);
+            peerLevelRef.current = Math.min(1, rms * 3.5); // Increased sensitivity for remote audio
             const glow = document.getElementById('peer-glow');
-            if (glow) glow.style.opacity = String(0.35 + peerLevelRef.current * 0.95);
+            if (glow) {
+              const opacity = 0.25 + peerLevelRef.current * 0.75; // Better range 0.25-1.0
+              glow.style.opacity = String(Math.min(1, opacity));
+            }
             requestAnimationFrame(loop);
           };
           requestAnimationFrame(loop);
         }
-      } catch {}
+      } catch (err) { 
+        console.warn('[peer-audio-level]', err); 
+        // Fallback: ensure peer glow has minimum visibility
+        const glow = document.getElementById('peer-glow');
+        if (glow) glow.style.opacity = '0.25';
+      }
     };
 
     pc.onconnectionstatechange = () => { if (pc.connectionState === 'connected') startBitrateMonitor(); };
@@ -987,8 +1000,8 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
                 <div className="text-xs text-white/70">{peerPresent ? 'Connected' : 'Waiting for peer…'}</div>
               </div>
 
-              {/* Scroll area */}
-              <div id="chatScroll" className="h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03]">
+              {/* Scroll area (hidden scrollbar) */}
+              <div id="chatScroll" className="h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {chat.map(m => (
                   <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
                     {/* Optional avatar dot */}
