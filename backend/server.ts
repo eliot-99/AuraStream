@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import { Server as SocketIOServer } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
+import { instrument } from '@socket.io/admin-ui';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
@@ -85,6 +86,20 @@ const io = new SocketIOServer(server, {
     console.error('[REDIS][ERROR] Failed to init adapter:', e?.message || e);
   }
 })();
+
+// Socket.IO Admin UI setup
+const adminPassword = bcrypt.hashSync("Admin@1234", 10);
+instrument(io, {
+  auth: {
+    type: "basic",
+    username: "Admin",
+    password: adminPassword
+  },
+  mode: "development", // Enable admin UI
+});
+
+console.log('[SOCKET.IO][ADMIN] Admin UI enabled - Access at https://admin.socket.io');
+console.log('[SOCKET.IO][ADMIN] Username: Admin | Password: Admin@1234');
 
 // In-memory room membership tracking for diagnostics
 const roomsState = new Map<string, Set<string>>();
