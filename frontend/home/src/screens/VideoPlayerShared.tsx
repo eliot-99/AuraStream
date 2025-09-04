@@ -113,6 +113,11 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   const [myLevel, setMyLevel] = useState(0);
   const [peerLevel, setPeerLevel] = useState(0);
   const lastVuSentRef = useRef<number>(0);
+  
+  // Peer video handling
+  const peerVideoRef = useRef<HTMLVideoElement>(null);
+  const [peerCamOn, setPeerCamOn] = useState(false);
+  const [peerStreamAvailable, setPeerStreamAvailable] = useState(false);
 
   // Active speaker flags
   const meActive = useMemo(() => myLevel > 0.04 && myLevel > peerLevel + 0.02, [myLevel, peerLevel]);
@@ -253,7 +258,10 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
       s.on('control', (payload: any) => {
         if (payload?.type === 'state') {
           if (typeof payload.micMuted === 'boolean') setMicUiMuted(payload.micMuted);
-          if (typeof payload.camOn === 'boolean') setCamOn(payload.camOn);
+          if (typeof payload.camOn === 'boolean') {
+            setCamOn(payload.camOn);
+            setPeerCamOn(payload.camOn); // Track peer's camera state
+          }
         }
       });
       // Receive chat messages into the local drawer list
@@ -280,6 +288,61 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
       });
       return () => { try { s.disconnect(); } catch {} };
     } catch {}
+
+    // Check for existing peer video stream (from SharedRoom WebRTC connection)
+    const checkPeerStream = () => {
+      try {
+        // Look for existing WebRTC peer connection and remote stream
+        const remotePanelEl = document.querySelector('video[data-peer="remote"]') as HTMLVideoElement;
+        const remoteTopEl = document.querySelector('video[data-remote-stream]') as HTMLVideoElement;
+        
+        let sourceStream: MediaStream | null = null;
+        
+        if (remotePanelEl && (remotePanelEl as any).srcObject) {
+          sourceStream = (remotePanelEl as any).srcObject as MediaStream;
+        } else if (remoteTopEl && (remoteTopEl as any).srcObject) {
+          sourceStream = (remoteTopEl as any).srcObject as MediaStream;
+        }
+        
+        // Also check global window objects from SharedRoom
+        if (!sourceStream && (window as any).__peerStream) {
+          sourceStream = (window as any).__peerStream as MediaStream;
+        }
+        
+        if (sourceStream && peerVideoRef.current) {
+          (peerVideoRef.current as any).srcObject = sourceStream;
+          peerVideoRef.current.muted = true;
+          peerVideoRef.current.playsInline = true;
+          peerVideoRef.current.autoplay = true;
+          
+          const hasVideo = sourceStream.getVideoTracks().length > 0;
+          setPeerStreamAvailable(hasVideo);
+          setPeerCamOn(hasVideo);
+          
+          const play = () => { 
+            try { 
+              peerVideoRef.current?.play(); 
+            } catch {} 
+          };
+          
+          if (peerVideoRef.current.readyState >= 2) {
+            play();
+          } else {
+            peerVideoRef.current.onloadedmetadata = play;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to connect peer stream:', e);
+      }
+    };
+    
+    // Check immediately and periodically for peer stream
+    checkPeerStream();
+    const streamCheckInterval = setInterval(checkPeerStream, 2000);
+    
+    return () => {
+      clearInterval(streamCheckInterval);
+    };
   }, []);
 
   // Dynamic sizing based on video aspect ratio
@@ -655,22 +718,26 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
 
                     {/* Call cards */}
-                    <div className="grid grid-cols-1 gap-3">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       <div className="relative w-full flex flex-col items-center">
-                        <div className="w-[300px] h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
+                        <div className="w-full max-w-[300px] lg:max-w-[400px] h-[150px] lg:h-[200px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
                              style={{ boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }}>
                           {camOn ? (
                             <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
                           ) : (
-                            myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span>🧑</span>
+                            myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span className="text-4xl">🧑</span>
                           )}
                         </div>
                         <div className="mt-2 text-white/80 text-sm text-center truncate">{myName}</div>
                       </div>
                       <div className="relative w-full flex flex-col items-center">
-                        <div className="w-[300px] h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
+                        <div className="w-full max-w-[300px] lg:max-w-[400px] h-[150px] lg:h-[200px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
                              style={{ boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }}>
-                          {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span>👤</span>}
+                          {peerStreamAvailable && peerCamOn ? (
+                            <video ref={peerVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
+                          ) : (
+                            peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span className="text-4xl">👤</span>
+                          )}
                         </div>
                         <div className="mt-2 text-white/80 text-sm text-center truncate">{peerName}</div>
                       </div>

@@ -466,6 +466,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
 
     pc.ontrack = async (e) => {
       const [stream] = e.streams;
+      
+      // Expose peer stream globally for VideoPlayerShared to access
+      (window as any).__peerStream = stream;
+      
       if (remoteTopRef.current && stream) {
         remoteTopRef.current.srcObject = stream;
         try { await remoteTopRef.current.play(); } catch {}
@@ -1115,15 +1119,15 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
           </div>
           
           {/* Webcam rectangles */}
-          <div className="relative z-10 flex gap-8 items-center justify-center">
+          <div className="relative z-10 flex flex-col md:flex-row gap-4 md:gap-8 items-center justify-center">
             {/* Host/Local webcam rectangle */}
             <div 
               className="relative group cursor-pointer"
               onClick={() => setShowWebcamView(false)}
             >
-              <div className="relative w-80 h-60 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
+              <div className="relative w-72 h-54 sm:w-80 sm:h-60 lg:w-96 lg:h-72 xl:w-[28rem] xl:h-80 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
                 <video 
-                  ref={localTopRef} 
+                  ref={localPanelRef} 
                   className="w-full h-full object-cover" 
                   playsInline 
                   muted 
@@ -1135,9 +1139,9 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
                 {!camOn && (
                   <div className="w-full h-full flex items-center justify-center">
                     {myAvatar ? (
-                      <img src={myAvatar} alt="Me" className="w-32 h-32 rounded-full object-cover" />
+                      <img src={myAvatar} alt="Me" className="w-24 h-24 sm:w-32 sm:h-32 lg:w-40 lg:h-40 rounded-full object-cover" />
                     ) : (
-                      <div className="text-8xl">👤</div>
+                      <div className="text-6xl sm:text-8xl lg:text-9xl">👤</div>
                     )}
                   </div>
                 )}
@@ -1159,11 +1163,11 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
               className="relative group cursor-pointer"
               onClick={() => setShowWebcamView(false)}
             >
-              <div className="relative w-80 h-60 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
+              <div className="relative w-72 h-54 sm:w-80 sm:h-60 lg:w-96 lg:h-72 xl:w-[28rem] xl:h-80 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
                 {peerPresent ? (
                   <>
                     <video 
-                      ref={remoteTopRef} 
+                      ref={remotePanelRef} 
                       className="w-full h-full object-cover" 
                       playsInline 
                       style={{ display: remoteHasVideo ? 'block' : 'none' }} 
@@ -1171,9 +1175,9 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
                     {!remoteHasVideo && (
                       <div className="w-full h-full flex items-center justify-center">
                         {peerAvatar ? (
-                          <img src={peerAvatar} alt="Peer" className="w-32 h-32 rounded-full object-cover" />
+                          <img src={peerAvatar} alt="Peer" className="w-24 h-24 sm:w-32 sm:h-32 lg:w-40 lg:h-40 rounded-full object-cover" />
                         ) : (
-                          <div className="text-8xl">👤</div>
+                          <div className="text-6xl sm:text-8xl lg:text-9xl">👤</div>
                         )}
                       </div>
                     )}
