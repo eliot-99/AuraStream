@@ -81,10 +81,9 @@ export default function Home({ onStartSolo }: HomeProps) {
         </a>
       </div>
 
-      {/* Bottom-right clock + link */}
-      <div className="fixed right-4 bottom-4 text-[12px] text-white/90 flex flex-col items-end gap-1">
+      {/* Bottom-right clock */}
+      <div className="fixed right-4 bottom-4 text-[12px] text-white/90">
         <span aria-live="polite">{clock || '—'}</span>
-        <a href="/transparency-report" className="text-aura-neon underline">Data Safety Pledge</a>
       </div>
 
       {/* Center panel */}

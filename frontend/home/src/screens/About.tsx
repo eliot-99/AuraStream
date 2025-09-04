@@ -83,20 +83,22 @@ function MagicBentoImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-// Creator card — increased height
+// Enhanced Creator Card — glass, gradient edge, lift-on-hover
 function CreatorCard({ name, role, img, github, linkedin }: { name: string; role: string; img: string; github?: string; linkedin?: string }) {
   return (
-    <div className="rounded-3xl bg-white/6 border border-white/15 p-6 md:p-8 flex items-center gap-6 min-h-[320px]">
-      <div className="shrink-0 w-48 h-48 md:w-56 md:h-56">
-        <MagicBentoImage src={img} alt={name} />
-      </div>
-      <div className="flex-1">
-        <div className="text-center">
-          <div className="text-2xl md:text-3xl font-semibold text-white">{name}</div>
-          <div className="text-white/85 text-sm md:text-base mt-1">{role}</div>
-          <div className="mt-3 flex items-center justify-center gap-2">
-            <SocialIcon type="github" href={github} label={`${name} GitHub`} />
-            <SocialIcon type="linkedin" href={linkedin} label={`${name} LinkedIn`} />
+    <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+      <div className="rounded-3xl bg-white/6/80 border border-white/15 p-6 md:p-8 grid grid-cols-1 md:grid-cols-[auto,1fr] items-center gap-6 min-h-[320px] backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+        <div className="shrink-0 w-40 h-40 md:w-56 md:h-56 mx-auto md:mx-0">
+          <MagicBentoImage src={img} alt={name} />
+        </div>
+        <div className="flex-1 w-full">
+          <div className="text-center md:text-left">
+            <div className="text-2xl md:text-3xl font-semibold text-white bg-clip-text text-transparent bg-gradient-to-r from-white to-violet-200 whitespace-nowrap overflow-hidden text-ellipsis">{name}</div>
+            <div className="text-white/85 text-sm md:text-base mt-1">{role}</div>
+            <div className="mt-3 flex items-center justify-center md:justify-start gap-2">
+              <SocialIcon type="github" href={github} label={`${name} GitHub`} />
+              <SocialIcon type="linkedin" href={linkedin} label={`${name} LinkedIn`} />
+            </div>
           </div>
         </div>
       </div>
@@ -106,10 +108,12 @@ function CreatorCard({ name, role, img, github, linkedin }: { name: string; role
 
 function StepBox({ icon, title, text }: { icon: string; title: string; text: string }) {
   return (
-    <div className="rounded-2xl bg-white/6 border border-white/15 p-5 sm:p-6 text-center hover:bg-white/8 transition-colors">
-      <div className="text-2xl mb-2" aria-hidden>{icon}</div>
-      <div className="text-base md:text-lg font-medium text-white">{title}</div>
-      <div className="text-white/85 text-sm mt-1 leading-relaxed">{text}</div>
+    <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+      <div className="rounded-3xl bg-white/6/80 border border-white/15 p-6 sm:p-8 text-center backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+        <div className="text-3xl mb-4" aria-hidden>{icon}</div>
+        <div className="text-lg md:text-xl font-semibold text-white mb-2">{title}</div>
+        <div className="text-white/85 leading-relaxed">{text}</div>
+      </div>
     </div>
   );
 }
@@ -145,6 +149,55 @@ function TechPill({ icon, label }: { icon: string; label: string }) {
       <div className="relative z-10 flex items-center gap-2">
         <span className="text-lg" aria-hidden>{icon}</span>
         <span className="text-white/95">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+// Section title wrapper with consistent spacing
+function SectionTitle({ text, min }: { text: string; min: number }) {
+  return (
+    <div className="w-full text-center mb-12">
+      <div className="mx-auto w-full h-[72px] flex items-center justify-center">
+        <TextPressure
+          text={text}
+          className="select-none text-center"
+          fontFamily="Compressa VF"
+          fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
+          width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
+          textColor="#ffffff" minFontSize={min}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Feature card to list key capabilities
+function FeatureCard({ icon, title, text }: { icon: string; title: string; text: string }) {
+  return (
+    <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+      <div className="rounded-3xl bg-white/6/80 border border-white/15 p-6 backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+        <div className="flex items-start gap-4">
+          <div className="text-3xl flex-shrink-0 mt-1" aria-hidden>{icon}</div>
+          <div>
+            <div className="text-white font-semibold text-lg mb-2">{title}</div>
+            <div className="text-white/85 leading-relaxed">{text}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Architecture box item
+function ArchItem({ title, points }: { title: string; points: string[] }) {
+  return (
+    <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+      <div className="rounded-3xl bg-white/6/80 border border-white/15 p-6 backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+        <div className="text-white font-semibold text-lg mb-4">{title}</div>
+        <ul className="list-disc list-inside space-y-2 text-white/85 leading-relaxed">
+          {points.map((p, i) => (<li key={i}>{p}</li>))}
+        </ul>
       </div>
     </div>
   );
@@ -204,135 +257,169 @@ export default function About() {
 
       {/* Content (scrollbar hidden) */}
       <main className="relative z-10 overflow-y-auto max-h-screen [scrollbar-width:none] [-ms-overflow-style:none]">
-        {/* Title */}
-        <section className="px-4 md:px-8 pt-14">
-          <div className="text-center w-full max-w-[60rem] mx-auto">
-            <div className="mx-auto h-[96px] md:h-[116px]">
+        
+        {/* Hero Title Section */}
+        <section className="px-4 md:px-8 pt-20 pb-16">
+          <div className="text-center w-full max-w-[64rem] mx-auto">
+            {/* Main Title */}
+            <div className="mx-auto w-full max-w-[48rem] h-[84px] md:h-[108px] flex items-center justify-center">
               <TextPressure
                 text="About AuraStream"
-                className="select-none"
+                className="select-none text-center"
                 fontFamily="Compressa VF"
                 fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
                 width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-                textColor="#F5F3FF" minFontSize={58}
+                textColor="#F5F3FF" minFontSize={48}
               />
             </div>
-            <p className="mt-2 text-violet-100/90 text-lg md:text-xl leading-relaxed">Elegant, minimal, and secure. Watch alone or perfectly in sync with friends.</p>
+            {/* Hero Description */}
+            <div className="mt-6 max-w-4xl mx-auto">
+              <p className="text-violet-100/90 text-xl md:text-2xl leading-relaxed">
+                Elegant, minimal, and secure. Watch alone or perfectly in sync with friends through an ambient interface that gets out of your way.
+              </p>
+            </div>
           </div>
         </section>
 
-        {/* Creators */}
-        <section className="px-4 md:px-8 py-10">
-          <div className="mx-auto max-w-[24rem] h-[56px]">
-            <TextPressure
-              text="The Creators"
-              className="select-none text-center"
-              fontFamily="Compressa VF"
-              fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
-              width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-              textColor="#ffffff" minFontSize={28}
-            />
-          </div>
-          <div className="mt-6 max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
-            <CreatorCard name="Saptarshi Ghosh" role="UI Design & Backend" img="/creators/Saptarshi_AuraStream.png" github="https://github.com/saptarshi0999" />
-            <CreatorCard name="Sudip Mishra" role="Frontend" img="/creators/Sudip_AuraStream.png" />
-          </div>
-        </section>
-
-        {/* Story (no book icon) */}
-        <section className="px-4 md:px-8 py-8">
-          <div className="mx-auto max-w-[36rem] h-[50px]">
-            <TextPressure
-              text="The Story Behind AuraStream"
-              className="select-none text-center"
-              fontFamily="Compressa VF"
-              fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
-              width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-              textColor="#ffffff" minFontSize={24}
-            />
-          </div>
-          <div className="max-w-5xl mx-auto mt-5 rounded-3xl bg-white/6 border border-white/15 p-6 md:p-7 text-center">
-            <p className="text-white/90 leading-relaxed">
-              AuraStream began from a simple belief: watching together should feel effortless and delightful. We were tired of tools
-              that added friction—noisy UIs, unreliable sync, awkward recovery. AuraStream focuses on flow: calm visuals, thoughtful
-              controls, and a resilient core that keeps you connected.
-            </p>
-            <p className="text-white/85 leading-relaxed mt-3">
-              Under the hood, it quietly handles the hard parts: queued signaling if you go offline, HTTP fallbacks with retries,
-              graceful ICE restarts, TURN validation and re‑validation, and state recovery on reconnect. The result is a premium
-              experience that gets out of your way.
-            </p>
+        {/* Why AuraStream */}
+        <section className="px-4 md:px-8 py-20">
+          <SectionTitle text="Why AuraStream" min={28} />
+          <div className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+              <div className="rounded-3xl bg-white/6/80 border border-white/15 p-8 md:p-10 backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+                <div className="text-2xl font-bold text-white mb-6 bg-gradient-to-r from-white to-violet-200 bg-clip-text text-transparent">Experience First</div>
+                <ul className="space-y-5 text-white/90 leading-relaxed">
+                  <li className="flex gap-4 items-start"><span className="text-2xl flex-shrink-0 mt-1" aria-hidden>🎯</span><span>Zero‑clutter UI and ambient visuals that keep the focus on your media content.</span></li>
+                  <li className="flex gap-4 items-start"><span className="text-2xl flex-shrink-0 mt-1" aria-hidden>🧭</span><span>Resilient sync with queued signaling, HTTP fallbacks, and fast state recovery.</span></li>
+                </ul>
+              </div>
+            </div>
+            <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+              <div className="rounded-3xl bg-white/6/80 border border-white/15 p-8 md:p-10 backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+                <div className="text-2xl font-bold text-white mb-6 bg-gradient-to-r from-white to-violet-200 bg-clip-text text-transparent">Security Built-in</div>
+                <ul className="space-y-5 text-white/90 leading-relaxed">
+                  <li className="flex gap-4 items-start"><span className="text-2xl flex-shrink-0 mt-1" aria-hidden>🔒</span><span>Security by default with JWT auth, Helmet, CSP/HSTS, and careful origin rules.</span></li>
+                  <li className="flex gap-4 items-start"><span className="text-2xl flex-shrink-0 mt-1" aria-hidden>⚙️</span><span>Works across conditions with TURN validation, ICE restarts, and Socket.IO recovery.</span></li>
+                </ul>
+              </div>
+            </div>
           </div>
         </section>
 
-        {/* How to use */}
-        <section className="px-4 md:px-8 py-10">
-          <div className="mx-auto max-w-[28rem] h-[50px]">
-            <TextPressure
-              text="How to Use AuraStream"
-              className="select-none text-center"
-              fontFamily="Compressa VF"
-              fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
-              width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-              textColor="#ffffff" minFontSize={24}
-            />
-          </div>
-          <div className="mt-6 max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-center gap-4">
-            <StepBox icon="🔐" title="1. Join/Create" text="Open Watch Together. Create or join a room and share the link/code." />
-            <div className="hidden sm:block text-white/70">➜</div>
-            <StepBox icon="🎬" title="2. Pick Media" text="Choose a local file to capture or share a screen/window." />
-            <div className="hidden sm:block text-white/70">➜</div>
-            <StepBox icon="⏯️" title="3. Play in Sync" text="Use controls and chat. We keep everyone perfectly aligned." />
-            <div className="hidden sm:block text-white/70">➜</div>
-            <StepBox icon="🌈" title="4. Enjoy" text="Ambient visuals, light UI, and smooth recovery if the network blips." />
+        {/* Core Features */}
+        <section className="px-4 md:px-8 py-20">
+          <SectionTitle text="Core Features" min={28} />
+          <div className="max-w-7xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+            <FeatureCard icon="🕒" title="Perfect Sync" text="Host controls propagate instantly with jitter smoothing and drift correction for seamless viewing." />
+            <FeatureCard icon="📁" title="Any Source" text="Play local captures, screens, or shared streams with minimal setup and maximum compatibility." />
+            <FeatureCard icon="💬" title="Lightweight Chat" text="Coordinate with peers without noisy overlays or heavy UI that distracts from content." />
+            <FeatureCard icon="📶" title="Network Resilience" text="Auto‑retry flows keep sessions connected through flaky networks and connection drops." />
+            <FeatureCard icon="🧩" title="Modular Core" text="Clear boundaries between media, signaling, auth, and UI layers for maintainable code." />
+            <FeatureCard icon="🌙" title="Calm Aesthetic" text="Quiet gradients, subtle motion, and accessible contrast that works day or night." />
           </div>
         </section>
 
-        {/* Technology stack */}
-        <section className="px-4 md:px-8 py-10">
-          <div className="mx-auto max-w-[26rem] h-[50px]">
-            <TextPressure
-              text="Technology Stack"
-              className="select-none text-center"
-              fontFamily="Compressa VF"
-              fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
-              width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-              textColor="#ffffff" minFontSize={24}
-            />
-          </div>
-          <div className="max-w-5xl mx-auto mt-6 grid grid-cols-2 md:grid-cols-3 gap-3">
-            <TechPill icon="⚛️" label="React + TypeScript" />
-            <TechPill icon="⚡" label="Vite" />
-            <TechPill icon="🎨" label="TailwindCSS" />
-            <TechPill icon="🎞️" label="Framer Motion (minimal)" />
-            <TechPill icon="🧵" label="Socket.IO" />
-            <TechPill icon="📹" label="WebRTC + ICE Restarts" />
-            <TechPill icon="🟩" label="Node + Express" />
-            <TechPill icon="🍃" label="MongoDB" />
-            <TechPill icon="🛡️" label="JWT, Helmet, CSP, HSTS" />
+        {/* How It Works */}
+        <section className="px-4 md:px-8 py-20">
+          <SectionTitle text="How It Works" min={28} />
+          <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
+            <StepBox icon="🔗" title="1. Connect" text="Join a room instantly or create one with optional password protection for privacy and security." />
+            <StepBox icon="📤" title="2. Share" text="Upload media or share your screen directly in‑browser — no extra apps or downloads needed to get started." />
+            <StepBox icon="🎬" title="3. Sync" text="All participants see the same frame with real‑time controls and integrated chat for seamless communication." />
           </div>
         </section>
 
-        {/* CTA */}
-        <section className="min-h-[32vh] flex items-center justify-center px-4 md:px-8 pb-14">
-          <div className="max-w-[44rem] w-[92vw] text-center">
-            <div className="w-full max-w-[42rem] mx-auto h-[84px] md:h-[100px]">
+        {/* Technology Stack */}
+        <section className="px-4 md:px-8 py-20">
+          <SectionTitle text="Technology Stack" min={28} />
+          <div className="max-w-7xl mx-auto">
+            {/* Architecture Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 mb-16">
+              <ArchItem title="Frontend Stack" points={["React 18 + TypeScript", "Framer Motion animations", "TailwindCSS styling", "WebRTC peer connections"]} />
+              <ArchItem title="Backend Stack" points={["Node.js + Express", "Socket.IO real‑time", "JWT authentication", "TURN server integration"]} />
+              <ArchItem title="Infrastructure" points={["Docker deployment", "HTTPS/WSS everywhere", "Cloudflare optimization", "Automated CI/CD"]} />
+            </div>
+            {/* Tech Pills */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              <TechPill icon="⚛️" label="React 18" />
+              <TechPill icon="🔵" label="TypeScript" />
+              <TechPill icon="🟢" label="Node.js" />
+              <TechPill icon="⚡" label="Socket.IO" />
+              <TechPill icon="🎨" label="Tailwind" />
+              <TechPill icon="🎬" label="Framer" />
+              <TechPill icon="📡" label="WebRTC" />
+              <TechPill icon="🔐" label="JWT Auth" />
+              <TechPill icon="🐳" label="Docker" />
+              <TechPill icon="☁️" label="Cloudflare" />
+              <TechPill icon="🔒" label="HTTPS" />
+              <TechPill icon="⚙️" label="Express" />
+            </div>
+          </div>
+        </section>
+
+        {/* The Story */}
+        <section className="px-4 md:px-8 py-20">
+          <div className="w-full text-center mb-6">
+            <div className="mx-auto w-full h-[72px] flex items-center justify-center">
               <TextPressure
-                text="Build with us"
-                className="select-none"
+                text="The Story Behind AuraStream"
+                className="select-none text-center"
                 fontFamily="Compressa VF"
                 fontUrl="https://res.cloudinary.com/dr6lvwubh/raw/upload/v1529908256/CompressaPRO-GX.woff2"
                 width={true} weight={true} italic={true} alpha={false} flex={false} stroke={false} scale={false}
-                textColor="#ffffff" minFontSize={42}
+                textColor="#ffffff" minFontSize={28}
               />
             </div>
-            <p className="mt-3 text-white/85">We welcome ideas, feedback, and contributions. Let’s make AuraStream even better.</p>
-            <div className="mt-6 flex items-center justify-center gap-4">
-              <StarBorder as="a" className={`${buttonBase} text-white/90 rounded-2xl`} color="#ffffff" speed="7s" thickness={1} href="https://github.com/eliot-99/AuraStream" target="_blank" rel="noreferrer">🔗 GitHub Repository</StarBorder>
-              <StarBorder as="a" className={`${buttonBase} text-white/90 rounded-2xl`} color="#ffffff" speed="7s" thickness={1} href="mailto:saptarshi0999@gmail.com?subject=AuraStream%20Collaboration">🤝 Collaborate</StarBorder>
+          </div>
+          <div className="group relative max-w-5xl mx-auto rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+            <div className="rounded-3xl bg-white/6/80 border border-white/15 p-8 md:p-12 text-center backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+              <p className="text-white/90 text-lg leading-relaxed mb-8">
+                AuraStream began from a simple belief: watching together should feel effortless and delightful. We were tired of tools
+                that added friction—noisy UIs, unreliable sync, awkward recovery. AuraStream focuses on flow: calm visuals, thoughtful
+                controls, and a resilient core that keeps you connected.
+              </p>
+              <p className="text-white/85 text-lg leading-relaxed">
+                Under the hood, it quietly handles the hard parts: queued signaling if you go offline, HTTP fallbacks with retries,
+                graceful ICE restarts, TURN validation and re‑validation, and state recovery on reconnect. The result is a premium
+                experience that gets out of your way.
+              </p>
             </div>
           </div>
         </section>
+
+        {/* Meet The Creators */}
+        <section className="px-4 md:px-8 py-20">
+          <SectionTitle text="Meet The Creators" min={28} />
+          <div className="max-w-6xl mx-auto grid grid-cols-1 gap-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <CreatorCard name="Saptarshi Ghosh" role="UI Design & Backend Architecture" img="/creators/Saptarshi_AuraStream.png" github="https://github.com/saptarshi0999" />
+              <CreatorCard name="Sudip Mishra" role="Frontend Development & UX" img="/creators/Sudip_AuraStream.png" />
+            </div>
+          </div>
+        </section>
+
+        {/* Get Started */}
+        <section className="px-4 md:px-8 py-16 pb-24">
+          <SectionTitle text="Get Started" min={28} />
+          <div className="max-w-2xl mx-auto text-center">
+            <div className="group relative rounded-3xl p-[1px] bg-gradient-to-br from-white/25 via-white/10 to-transparent">
+              <div className="rounded-3xl bg-white/6/80 border border-white/15 p-8 backdrop-blur-md transition-all duration-300 group-hover:-translate-y-1 group-hover:bg-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.25)] group-hover:shadow-[0_16px_60px_rgba(0,0,0,0.35)]">
+                <p className="text-white/90 text-lg leading-relaxed mb-8">
+                  Ready to experience seamless watching together? Start your first session or explore the codebase.
+                </p>
+                <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                  <StarBorder as="a" className={`${buttonBase} text-white/90 rounded-2xl bg-white/5 hover:bg-white/10`} color="#ffffff" speed="7s" thickness={1} href="#/home">
+                    🚀 Start Watching
+                  </StarBorder>
+                  <StarBorder as="a" className={`${buttonBase} text-white/90 rounded-2xl bg-white/5 hover:bg-white/10`} color="#ffffff" speed="7s" thickness={1} href="https://github.com/eliot-99/AuraStream" target="_blank" rel="noreferrer">
+                    🔗 GitHub Repository
+                  </StarBorder>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
       </main>
     </div>
   );

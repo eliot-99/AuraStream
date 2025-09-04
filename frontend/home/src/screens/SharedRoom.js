@@ -97,7 +97,7 @@ export default function SharedRoom() {
             reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 8000,
-            timeout: 20000,
+            timeout: 60000,
             autoConnect: true,
             auth: { room, accessToken }
         });
@@ -138,59 +138,98 @@ export default function SharedRoom() {
             return btoa(b64);
         }
         async function refreshAccessTokenIfNeeded(reason) {
-            try {
-                // Try to mint a fresh short-lived access token
-                const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
-                let passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
-                let r = await fetch(`${API_BASE}/api/rooms/join`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: room, passVerifier })
-                });
-                // If server requires password (private room) and we don't have pv cached, prompt once
-                if (!r.ok && (r.status === 400 || r.status === 401)) {
-                    const pw = window.prompt('Room password required to rejoin:');
-                    if (!pw)
-                        return false;
-                    try {
-                        passVerifier = await derivePassVerifier(room, pw);
-                        try {
-                            sessionStorage.setItem(`room:${room}:pv`, passVerifier);
+            let attempts = 0;
+            const maxAttempts = 3;
+            const socket = socketRef.current; // Assumes socketRef is defined in scope
+            const API_BASE = import.meta.env?.VITE_API_BASE || (typeof window !== 'undefined' ? window.location.origin : '');
+            while (attempts < maxAttempts) {
+                try {
+                    let passVerifier = sessionStorage.getItem(`room:${room}:pv`) || '';
+                    let r = await fetch(`${API_BASE}/api/rooms/join`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: room, passVerifier }),
+                    });
+                    // Handle private room password prompt
+                    if (!r.ok && (r.status === 400 || r.status === 401)) {
+                        const pw = window.prompt('Room password required to rejoin:');
+                        if (!pw) {
+                            pushToast('Password required to rejoin room.', 'error');
+                            return false;
                         }
-                        catch { }
-                        r = await fetch(`${API_BASE}/api/rooms/join`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name: room, passVerifier })
-                        });
+                        try {
+                            passVerifier = await derivePassVerifier(room, pw);
+                            try {
+                                sessionStorage.setItem(`room:${room}:pv`, passVerifier);
+                            }
+                            catch {
+                                console.warn('[STORAGE] Failed to save passVerifier to sessionStorage');
+                            }
+                            r = await fetch(`${API_BASE}/api/rooms/join`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ name: room, passVerifier }),
+                            });
+                        }
+                        catch (e) {
+                            console.error('[AUTH] Password derivation failed:', e);
+                            pushToast('Failed to process room password.', 'error');
+                            return false;
+                        }
                     }
-                    catch { }
-                }
-                if (r.ok) {
-                    const j = await r.json();
-                    const looksJwt = j?.token && typeof j.token === 'string' && j.token.split('.').length === 3;
-                    if (looksJwt) {
-                        try {
-                            sessionStorage.setItem(`room:${room}:access`, j.token);
-                        }
-                        catch { }
-                        const newToken = j.token;
-                        socket.auth = { room, accessToken: newToken };
-                        // If already connected, avoid reconnect loop; just emit handshake with new token
-                        if (socket.connected) {
-                            const token = localStorage.getItem('auth');
-                            const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
-                            const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
-                            socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+                    if (r.ok) {
+                        const j = await r.json();
+                        const looksJwt = j?.token && typeof j.token === 'string' && j.token.split('.').length === 3;
+                        if (looksJwt) {
+                            try {
+                                sessionStorage.setItem(`room:${room}:access`, j.token);
+                            }
+                            catch {
+                                console.warn('[STORAGE] Failed to save access token to sessionStorage');
+                            }
+                            const newToken = j.token;
+                            if (!socket) {
+                                console.warn('[AUTH] Socket not available during token refresh; will reconnect when available.');
+                                pushToast('Access token refreshed. Reconnecting when ready…', 'info');
+                                return true;
+                            }
+                            socket.auth = { room, accessToken: newToken };
+                            // Emit handshake with new token
+                            if (socket.connected) {
+                                const token = localStorage.getItem('auth');
+                                const name = sessionStorage.getItem(`room:${room}:myName`) || undefined;
+                                const avatar = sessionStorage.getItem(`room:${room}:myAvatar`) || undefined;
+                                socket.emit('handshake', { room, token, accessToken: newToken, name, avatar });
+                                pushToast('Access token refreshed successfully.', 'success');
+                            }
+                            else {
+                                socket.connect();
+                                pushToast('Reconnecting with new access token.', 'info');
+                            }
+                            return true;
                         }
                         else {
-                            socket.connect();
+                            console.warn('[AUTH] Invalid JWT token received:', j?.token);
+                            pushToast('Received invalid access token.', 'error');
                         }
-                        return true;
+                    }
+                    else {
+                        console.warn('[AUTH] Join request failed:', r.status, await r.text());
+                        pushToast(`Failed to join room: ${r.statusText}`, 'error');
                     }
                 }
+                catch (e) {
+                    console.error('[AUTH] Token refresh error:', e);
+                    pushToast('Error refreshing access token.', 'error');
+                }
+                // Exponential backoff: 2s, 4s, 8s
+                attempts++;
+                if (attempts < maxAttempts) {
+                    await new Promise(res => setTimeout(res, 2000 * Math.pow(2, attempts)));
+                }
             }
-            catch { }
+            // All attempts failed
+            pushToast('Unable to refresh access token after retries. Please rejoin the room.', 'error');
             return false;
         }
         socket.on('error', async (err) => {

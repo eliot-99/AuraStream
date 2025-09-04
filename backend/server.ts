@@ -36,33 +36,28 @@ dotenv.config({ path: rootEnvPath, override: true });
 const app = express();
 const server = http.createServer(app);
 // Allowed origins for CORS (comma-separated). '*' = allow all.
-const allowedOrigins = (process.env.CORS_ORIGIN || '*')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'https://aura-stream-puce.vercel.app,https://*.vercel.app')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 const isProd = process.env.NODE_ENV === 'production';
 const io = new SocketIOServer(server, {
   cors: {
-    origin: (origin, cb) => {
-      try {
-        if (!origin) return cb(null, true);
-        if (allowedOrigins.length === 1 && allowedOrigins[0] === '*') return cb(null, true);
-        return corsMatcher(origin, allowedOrigins) ? cb(null, true) : cb(new Error('CORS blocked'));
-      } catch { return cb(null, true); }
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.some(o => o.includes('*') && new RegExp(o.replace('*', '.*')).test(origin))) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
     },
     methods: ['GET', 'POST'],
     credentials: true,
   },
-  cookie: {
-    name: 'io',
-    sameSite: isProd ? 'none' : 'lax',  // 'none' for cross-origin in prod
-    secure: isProd,  // Only secure in HTTPS
-    path: '/socket.io'
-  },
+  cookie: false,
   path: '/socket.io',
-  transports: ['websocket', 'polling'], // Allow fallback to HTTP long-polling
-  pingInterval: 30000, // Increased for prod stability
-  pingTimeout: 120000, // Increased for prod stability
+  transports: ['websocket'], // Allow fallback to HTTP long-polling
+  pingInterval: 25000,  
+  pingTimeout: 60000, 
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
 });
 
