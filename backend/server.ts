@@ -64,7 +64,7 @@ const io = new SocketIOServer(server, {
 // MongoDB adapter setup (free alternative to Redis)
 (async () => {
   try {
-    const mongoUrl = process.env.MONGODB_URI || process.env.DATABASE_URL;
+    const mongoUrl = process.env.MONGO_URI;
     if (mongoUrl) {
       // Use existing MongoDB connection for Socket.IO adapter
       const mongoClient = new mongoose.mongo.MongoClient(mongoUrl);
@@ -78,7 +78,7 @@ const io = new SocketIOServer(server, {
       io.adapter(adapter);
       console.log('[SOCKET.IO][MONGO] MongoDB adapter attached successfully');
     } else {
-      console.log('[SOCKET.IO] No MongoDB URL found, running in single-instance mode');
+      console.log('[SOCKET.IO] No MONGO_URI found, running in single-instance mode');
     }
   } catch (e: any) {
     console.error('[SOCKET.IO][MONGO][ERROR] Failed to init MongoDB adapter:', e?.message || e);
