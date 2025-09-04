@@ -37,7 +37,7 @@ dotenv.config({ path: rootEnvPath, override: true });
 const app = express();
 const server = http.createServer(app);
 // Allowed origins for CORS (comma-separated). '*' = allow all.
-const allowedOrigins = (process.env.CORS_ORIGIN || 'https://aura-stream-puce.vercel.app,https://*.vercel.app')
+const allowedOrigins = (process.env.CORS_ORIGIN || 'https://aura-stream-puce.vercel.app,https://*.vercel.app,https://admin.socket.io')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
@@ -56,7 +56,7 @@ const io = new SocketIOServer(server, {
   },
   cookie: false,
   path: '/socket.io',
-  transports: ['websocket'], // Allow fallback to HTTP long-polling
+  transports: ['websocket', 'polling'], // Allow fallback to HTTP long-polling
   pingInterval: 25000,  
   pingTimeout: 60000, 
   connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
@@ -95,11 +95,13 @@ instrument(io, {
     username: "Admin",
     password: adminPassword
   },
-  mode: "development", // Enable admin UI
+  mode: "production", // Enable admin UI in production
+  serverId: `aurastream-${Math.random().toString(36).substr(2, 9)}`, // Unique server ID
 });
 
 console.log('[SOCKET.IO][ADMIN] Admin UI enabled - Access at https://admin.socket.io');
 console.log('[SOCKET.IO][ADMIN] Username: Admin | Password: Admin@1234');
+console.log('[SOCKET.IO][ADMIN] Server URL: https://aurastream-api.onrender.com');
 
 // In-memory room membership tracking for diagnostics
 const roomsState = new Map<string, Set<string>>();
