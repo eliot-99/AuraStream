@@ -43,22 +43,28 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'https://aura-stream-puce.ver
 const isProd = process.env.NODE_ENV === 'production';
 const io = new SocketIOServer(server, {
   cors: {
-    origin: "*", // Allow all origins for admin UI to work
-    methods: ['GET', 'POST'],
+    origin: [
+      "https://admin.socket.io",
+      "https://aura-stream-puce.vercel.app", 
+      "https://*.vercel.app",
+      "http://localhost:3000",
+      "http://localhost:3001"
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   },
-  allowEIO3: true, // Support older Engine.IO versions
+  allowEIO3: true,
   cookie: false,
   path: '/socket.io',
-  transports: ['websocket', 'polling'], // Allow fallback to HTTP long-polling
-  pingInterval: 10000, // More frequent pings for stability
-  pingTimeout: 20000, // Shorter timeout for faster recovery
+  transports: ['polling', 'websocket'], // Try polling first, then upgrade
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  maxHttpBufferSize: 1e8, // 100MB for admin UI
   connectionStateRecovery: { 
     maxDisconnectionDuration: 2 * 60 * 1000,
     skipMiddlewares: true
-  },
-  upgradeTimeout: 30000, // Allow more time for WebSocket upgrade
-  maxHttpBufferSize: 1e6 // 1MB buffer size
+  }
 });
 
 // MongoDB adapter setup (free alternative to Redis)
@@ -88,17 +94,14 @@ const io = new SocketIOServer(server, {
 
 // Socket.IO Admin UI setup with simplified auth
 instrument(io, {
-  auth: {
-    type: "basic",
-    username: "Admin",
-    password: "Admin@1234"
-  },
-  mode: "development", // Force development mode for better compatibility
-  namespaceName: "/", // Specify default namespace
+  auth: false, // Disable auth temporarily for debugging
+  mode: "development",
+  namespaceName: "/",
+  serverId: `aurastream-${Date.now()}`,
 });
 
 console.log('[SOCKET.IO][ADMIN] Admin UI enabled - Access at https://admin.socket.io');
-console.log('[SOCKET.IO][ADMIN] Username: Admin | Password: Admin@1234');
+console.log('[SOCKET.IO][ADMIN] No authentication required (temporarily disabled)');
 console.log('[SOCKET.IO][ADMIN] Server URL: https://aurastream-api.onrender.com or http://localhost:3001');
 
 // In-memory room membership tracking for diagnostics
@@ -112,18 +115,25 @@ function removeFromRoomState(room: string, id: string) {
   if (set) { set.delete(id); if (set.size === 0) roomsState.delete(room); }
 }
 
+// Global connection counter for debugging
+let connectionCount = 0;
+
 // Socket.IO connection handler with auth-based join
 io.on('connection', (socket) => {
+  connectionCount++;
   let roomName: string | null = null;
   const transport = (socket as any)?.conn?.transport?.name || 'unknown';
   const upgraded = (socket as any)?.conn?.upgraded || false;
   console.log('[SOCKET][connect]', { 
     id: socket.id, 
+    count: connectionCount,
     ip: (socket.handshake.address || '').toString(), 
-    ua: socket.handshake.headers['user-agent'],
+    ua: socket.handshake.headers['user-agent']?.substring(0, 50) + '...',
     transport,
     upgraded,
-    protocol: socket.conn.protocol
+    protocol: socket.conn.protocol,
+    query: socket.handshake.query,
+    auth: Object.keys(socket.handshake.auth || {})
   });
   
   // Monitor transport upgrades
@@ -317,10 +327,17 @@ const corsMatcher = (origin: string, list: string[]) => {
   } catch { return false; }
 };
 app.use(cors({
-  origin: "*", // Allow all origins temporarily for admin UI debugging
+  origin: [
+    "https://admin.socket.io",
+    "https://aura-stream-puce.vercel.app", 
+    "https://*.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:3001"
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['X-Total-Count']
 }));
 app.use((req, res, next) => {
   const isProd = process.env.NODE_ENV === 'production';
@@ -369,14 +386,57 @@ app.get('/admin/status', (_req, res) => {
   const rooms = Array.from(io.sockets.adapter.rooms.keys()).filter(room => !io.sockets.adapter.sids.has(room));
   res.json({
     adminUI: 'enabled',
-    credentials: { username: 'Admin', password: 'Admin@1234' },
+    authDisabled: true,
     connectedSockets,
+    totalConnections: connectionCount,
     rooms,
     adminUrl: 'https://admin.socket.io',
     serverUrl: process.env.NODE_ENV === 'production' 
       ? 'https://aurastream-api.onrender.com' 
-      : 'http://localhost:3001'
+      : 'http://localhost:3001',
+    engineIOVersion: '~6.0.0',
+    socketIOVersion: '~4.7.5'
   });
+});
+
+// Socket.IO connection test endpoint
+app.get('/socket-test', (_req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>Socket.IO Test</title></head>
+    <body>
+      <h1>Socket.IO Connection Test</h1>
+      <div id="status">Connecting...</div>
+      <div id="logs"></div>
+      <script src="/socket.io/socket.io.js"></script>
+      <script>
+        const socket = io();
+        const status = document.getElementById('status');
+        const logs = document.getElementById('logs');
+        
+        function log(msg) {
+          logs.innerHTML += '<br>' + new Date().toLocaleTimeString() + ': ' + msg;
+        }
+        
+        socket.on('connect', () => {
+          status.textContent = 'Connected! ID: ' + socket.id;
+          log('Connected successfully');
+        });
+        
+        socket.on('disconnect', (reason) => {
+          status.textContent = 'Disconnected: ' + reason;
+          log('Disconnected: ' + reason);
+        });
+        
+        socket.on('connect_error', (error) => {
+          status.textContent = 'Connection Error: ' + error.message;
+          log('Error: ' + error.message);
+        });
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 // WebRTC ICE config endpoint (STUN/TURN)
