@@ -162,14 +162,8 @@ type Props = {
 };
 
 export default function AudioPlayerShared({ onBack, src, name }: Props) {
-  // Identify streamer: only the peer who initiated navigation controls playback
-  const isStreamer = useMemo(() => {
-    try {
-      const id = (window as any).sharedSocket?.id || '';
-      const sid = sessionStorage.getItem('shared:streamerId') || '';
-      return !!id && id === sid;
-    } catch { return false; }
-  }, []);
+  // Both peers can control playback now
+  const isStreamer = useMemo(() => true, []);
 
   // Single track state
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
@@ -210,6 +204,9 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
   const [msg, setMsg] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const msgInputRef = useRef<HTMLInputElement | null>(null);
+  
+  // Chat state to sync with SharedRoom
+  const [chat, setChat] = useState<Array<{id: string, fromSelf: boolean, text: string, ts: number}>>([]);
 
   const insertEmoji = (emoji: string) => {
     const el = msgInputRef.current;
@@ -644,19 +641,70 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         });
         s.on('sync', async (payload: any) => {
           try {
-            // Streamer-only control: listeners react to playback events
+            // Handle playback events
             if (payload && payload.type === 'playback') {
               const a = audioRef.current; if (!a) return;
               if (payload.action === 'play') { try { await a.play(); setPlaying(true); } catch {} }
               if (payload.action === 'pause') { try { a.pause(); setPlaying(false); } catch {} }
               if (payload.action === 'seek' && typeof payload.time === 'number') { a.currentTime = payload.time; }
+              if (payload.action === 'stop') { 
+                try { 
+                  a.pause(); 
+                  a.removeAttribute('src'); 
+                  a.load(); 
+                  setPlaying(false);
+                  // Navigate back to SharedRoom
+                  setTimeout(() => {
+                    try {
+                      window.location.hash = '#/shared-room';
+                    } catch {
+                      window.history.back();
+                    }
+                  }, 100);
+                } catch {} 
+              }
               return;
             }
+            // Handle VU meter updates
             if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
               setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+              return;
+            }
+            // Handle chat messages
+            if (payload && payload.type === 'chat' && payload.text) {
+              const newMsg = {
+                id: crypto.randomUUID?.() || Math.random().toString(36),
+                fromSelf: false,
+                text: payload.text,
+                ts: Date.now()
+              };
+              setChat(prev => [...prev, newMsg]);
+              // Also sync to SharedRoom chat state
+              try {
+                const room = sessionStorage.getItem('room') || 'demo';
+                const existingChat = JSON.parse(sessionStorage.getItem(`room:${room}:chat`) || '[]');
+                const updatedChat = [...existingChat, newMsg];
+                sessionStorage.setItem(`room:${room}:chat`, JSON.stringify(updatedChat));
+              } catch {}
+              // Auto-scroll to bottom
+              setTimeout(() => {
+                const box = document.getElementById('chatScroll');
+                if (box) box.scrollTop = box.scrollHeight;
+              }, 100);
             }
           } catch {}
         });
+      }
+    } catch {}
+  }, []);
+
+  // Load existing chat messages from SharedRoom
+  useEffect(() => {
+    try {
+      const room = sessionStorage.getItem('room') || 'demo';
+      const existingChat = JSON.parse(sessionStorage.getItem(`room:${room}:chat`) || '[]');
+      if (Array.isArray(existingChat)) {
+        setChat(existingChat);
       }
     } catch {}
   }, []);
@@ -752,7 +800,32 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between">
         <button
-          onClick={() => { try { const a = audioRef.current; if (a) { a.pause(); a.removeAttribute('src'); a.load(); } } catch {}; (onBack ? onBack() : window.history.back()); }}
+          onClick={() => { 
+            try { 
+              // Stop audio playback
+              const a = audioRef.current; 
+              if (a) { 
+                a.pause(); 
+                a.removeAttribute('src'); 
+                a.load(); 
+              } 
+              // Notify peer to stop audio
+              (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'stop' });
+              // Clear shared media state
+              sessionStorage.removeItem('shared:media');
+              sessionStorage.removeItem('shared:mode');
+            } catch {}; 
+            // Navigate back
+            if (onBack) {
+              onBack();
+            } else {
+              try {
+                window.location.hash = '#/shared-room';
+              } catch {
+                window.history.back();
+              }
+            }
+          }}
           aria-label="Back"
           className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition"
         >
@@ -778,9 +851,9 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         </div>
       </div>
 
-      {/* Bottom controls - single aligned bar */}
-      <div className="absolute bottom-4 left-0 right-0 z-20 px-4">
-        <div className="w-full max-w-6xl mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+      {/* Bottom controls - single aligned bar - Mobile optimized */}
+      <div className="absolute bottom-2 sm:bottom-4 left-0 right-0 z-20 px-2 sm:px-4">
+        <div className="w-full max-w-6xl mx-auto flex items-center gap-2 sm:gap-4 px-2 sm:px-3 py-2 sm:py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
           {/* Transport group */}
           <div className="flex items-center gap-2">
             <button onClick={() => handleSkip(-5)} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Back 5s">
@@ -817,15 +890,15 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
             <span className="text-[11px] tabular-nums w-14 text-white/90 text-right">{formatTime(progress.dur)}</span>
           </div>
 
-          {/* Volume + options */}
-          <div className="flex items-center gap-3">
-            <button onClick={() => setLoop(v => !v)} className={`h-9 w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`} title="Loop">
-              <Icon.Loop className="w-5 h-5" />
+          {/* Volume + options - Mobile optimized */}
+          <div className="flex items-center gap-1 sm:gap-3">
+            <button onClick={() => setLoop(v => !v)} className={`h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`} title="Loop">
+              <Icon.Loop className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
-            <button onClick={() => setShuffle(v => !v)} className={`h-9 w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`} title="Shuffle">
-              <Icon.Shuffle className="w-5 h-5" />
+            <button onClick={() => setShuffle(v => !v)} className={`h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`} title="Shuffle">
+              <Icon.Shuffle className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
-            <div className="flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20">
+            <div className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20">
               <button onClick={() => { const a = audioRef.current; if (!a) return; a.muted = !a.muted; setMuted(a.muted); }} className={`h-9 w-9 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`} title="Mute">
                 {muted ? <Icon.Mute className="w-5 h-5" /> : <Icon.Volume className="w-5 h-5" />}
               </button>
@@ -844,6 +917,10 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
                 />
               </div>
             </div>
+            {/* Mobile volume control */}
+            <button onClick={() => { const a = audioRef.current; if (!a) return; a.muted = !a.muted; setMuted(a.muted); }} className={`sm:hidden h-8 w-8 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`} title="Mute">
+              {muted ? <Icon.Mute className="w-4 h-4" /> : <Icon.Volume className="w-4 h-4" />}
+            </button>
           </div>
         </div>
       </div>
@@ -851,8 +928,8 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
       {/* Hidden audio element */}
       <audio ref={audioRef} src={currentTrack?.url} preload="metadata" />
 
-      {/* Side drawer: file list + call controls + chat (EXACT original structure) */}
-      <div className={`fixed top-0 right-0 h-full w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}>
+      {/* Side drawer: file list + call controls + chat - Mobile optimized */}
+      <div className={`fixed top-0 right-0 h-full w-[90%] sm:w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="text-white/90 font-medium">Call</div>
           <button onClick={() => setShowDrawer(false)} className="h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition" aria-label="Close">
@@ -866,25 +943,25 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
           <div className="flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2">
 
 
-            {/* Call cards */}
+            {/* Call cards - Mobile optimized */}
             <div className="grid grid-cols-1 gap-3">
               <div className="relative w-full flex flex-col items-center">
-                <div className="w-[300px] h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
+                <div className="w-full max-w-[280px] h-[120px] sm:h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center"
                      style={{ boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }}>
                   {camOn ? (
                     <video ref={myVideoRef} autoPlay muted playsInline className="w-full h-full object-cover"><track kind="captions" /></video>
                   ) : (
-                    myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span>🧑</span>
+                    myAvatar ? <img className="w-full h-full object-cover" src={myAvatar} alt="me"/> : <span className="text-3xl">🧑</span>
                   )}
                 </div>
-                <div className="mt-2 text-white/80 text-sm text-center truncate">{myName}</div>
+                <div className="mt-2 text-white/80 text-sm text-center truncate max-w-full">{myName}</div>
               </div>
               <div className="relative w-full flex flex-col items-center">
-                <div className="w-[300px] h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
+                <div className="w-full max-w-[280px] h-[120px] sm:h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center"
                      style={{ boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }}>
-                  {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span>👤</span>}
+                  {peerAvatar ? <img className="w-full h-full object-cover" src={peerAvatar} alt="peer"/> : <span className="text-3xl">👤</span>}
                 </div>
-                <div className="mt-2 text-white/80 text-sm text-center truncate">{peerName}</div>
+                <div className="mt-2 text-white/80 text-sm text-center truncate max-w-full">{peerName}</div>
               </div>
               <div className="mt-2 flex items-center justify-center gap-3">
                 <button onClick={toggleCam} title="Open Video" className={`h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`}>
@@ -901,7 +978,7 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
           <div className="h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col">
             {/* Scroll area for messages */}
             <div id="chatScroll" className="flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10">
-              {(window as any).__sharedChat?.length ? (window as any).__sharedChat.map((m: any) => (
+              {chat.length ? chat.map((m) => (
                 <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`}>
                     <div className="whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm">{m.text}</div>
@@ -920,14 +997,34 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
                   const s = (window as any).sharedSocket as import('socket.io-client').Socket | undefined;
                   const text = msg.trim();
                   if (!text) return;
-                  (window as any).__sharedChat = [
-                    ...((window as any).__sharedChat || []),
-                    { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: true, text, ts: Date.now() }
-                  ];
+                  
+                  const newMsg = {
+                    id: crypto.randomUUID?.() || Math.random().toString(36),
+                    fromSelf: true,
+                    text,
+                    ts: Date.now()
+                  };
+                  
+                  // Update local chat state
+                  setChat(prev => [...prev, newMsg]);
+                  
+                  // Sync to SharedRoom chat state
+                  try {
+                    const room = sessionStorage.getItem('room') || 'demo';
+                    const existingChat = JSON.parse(sessionStorage.getItem(`room:${room}:chat`) || '[]');
+                    const updatedChat = [...existingChat, newMsg];
+                    sessionStorage.setItem(`room:${room}:chat`, JSON.stringify(updatedChat));
+                  } catch {}
+                  
+                  // Send to peer
                   s?.emit('sync', { type: 'chat', text });
                   setMsg('');
-                  const box = document.getElementById('chatScroll');
-                  if (box) box.scrollTop = box.scrollHeight;
+                  
+                  // Auto-scroll to bottom
+                  setTimeout(() => {
+                    const box = document.getElementById('chatScroll');
+                    if (box) box.scrollTop = box.scrollHeight;
+                  }, 100);
                 } catch {}
               }}
               className="mt-2 pb-2 flex items-center gap-2"
