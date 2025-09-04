@@ -311,6 +311,15 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         setChat(c => [...c, { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: payload.text, ts: Date.now() }]);
         if (!chatOpen) setUnreadCount(prev => prev + 1);
       }
+      if (payload.type === 'vu' && typeof payload.level === 'number') {
+        // Update peer voice level and glow effect
+        peerLevelRef.current = Math.max(0, Math.min(1, payload.level));
+        const glow = document.getElementById('peer-glow');
+        if (glow) {
+          const opacity = 0.25 + peerLevelRef.current * 0.75;
+          glow.style.opacity = String(Math.min(1, opacity));
+        }
+      }
       if (payload.type === 'playback') {
         const v = remoteTopRef.current || remotePanelRef.current; if (!v) return;
         if (payload.action === 'play') v.play().catch(()=>{});
@@ -659,6 +668,7 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
       const gain = ctx.createGain();
       source.connect(gain);
       gain.connect(analyser);
+      let lastVuSent = 0;
       const loop = () => {
         analyser.getByteTimeDomainData(data);
         // compute RMS from time-domain samples centered around 128
@@ -667,6 +677,15 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         hostLevelRef.current = Math.min(1, rms * 2.5);
         const glow = document.getElementById('host-glow');
         if (glow) glow.style.opacity = String((micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0));
+        
+        // Emit VU meter data for peer synchronization (throttled)
+        const now = performance.now();
+        if (now - lastVuSent > 120) {
+          lastVuSent = now;
+          const level = micMutedRef.current ? 0 : hostLevelRef.current;
+          socketRef.current?.emit('sync', { type: 'vu', level: Number(level.toFixed(3)) });
+        }
+        
         requestAnimationFrame(loop);
       };
       requestAnimationFrame(loop);
@@ -709,6 +728,7 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
           analyser.fftSize = 1024;
           const data = new Uint8Array(analyser.fftSize);
           source.connect(analyser);
+          let lastVuSent = 0;
           const loop = () => {
             analyser.getByteTimeDomainData(data);
             let sum = 0; for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
@@ -716,6 +736,15 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             hostLevelRef.current = Math.min(1, rms * 2.5);
             const glow = document.getElementById('host-glow');
             if (glow) glow.style.opacity = String((micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0));
+            
+            // Emit VU meter data for peer synchronization (throttled)
+            const now = performance.now();
+            if (now - lastVuSent > 120) {
+              lastVuSent = now;
+              const level = micMutedRef.current ? 0 : hostLevelRef.current;
+              socketRef.current?.emit('sync', { type: 'vu', level: Number(level.toFixed(3)) });
+            }
+            
             requestAnimationFrame(loop);
           };
           requestAnimationFrame(loop);
@@ -979,9 +1008,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4h16v12H5.17L4 17.17V4zm3 14h11l4 4H7a2 2 0 0 1-2-2v-2h2z"/></svg>
             </button>
             {/* End Room */}
-            <button onClick={endRoom} aria-label="End Call" title="End Call" className="h-12 w-12 rounded-full bg-red-600/90 backdrop-blur-md border border-red-500 hover:scale-110 hover:bg-red-600 transition text-white flex items-center justify-center shadow-lg">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 6L6 18M6 6l12 12"/>
+            <button onClick={endRoom} aria-label="End Call" title="End Call" className="h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center bg-red-600/40 border-red-400 text-white shadow-lg">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+                <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M15 9L9 15M9 9l6 6"/>
               </svg>
             </button>
           </div>
