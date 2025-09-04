@@ -44,22 +44,22 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'https://aura-stream-puce.ver
 const isProd = process.env.NODE_ENV === 'production';
 const io = new SocketIOServer(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.some(o => o.includes('*') && new RegExp(o.replace('*', '.*')).test(origin))) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: "*", // Allow all origins for admin UI to work
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  allowEIO3: true, // Support older Engine.IO versions
   cookie: false,
   path: '/socket.io',
   transports: ['websocket', 'polling'], // Allow fallback to HTTP long-polling
-  pingInterval: 25000,  
-  pingTimeout: 60000, 
-  connectionStateRecovery: { maxDisconnectionDuration: 2 * 60 * 1000 }
+  pingInterval: 10000, // More frequent pings for stability
+  pingTimeout: 20000, // Shorter timeout for faster recovery
+  connectionStateRecovery: { 
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true
+  },
+  upgradeTimeout: 30000, // Allow more time for WebSocket upgrade
+  maxHttpBufferSize: 1e6 // 1MB buffer size
 });
 
 // Optional: Redis adapter for multi-instance scale
@@ -87,21 +87,20 @@ const io = new SocketIOServer(server, {
   }
 })();
 
-// Socket.IO Admin UI setup
-const adminPassword = bcrypt.hashSync("Admin@1234", 10);
+// Socket.IO Admin UI setup with simplified auth
 instrument(io, {
   auth: {
     type: "basic",
     username: "Admin",
-    password: adminPassword
+    password: "Admin@1234"
   },
-  mode: "production", // Enable admin UI in production
-  serverId: `aurastream-${Math.random().toString(36).substr(2, 9)}`, // Unique server ID
+  mode: "development", // Force development mode for better compatibility
+  namespaceName: "/", // Specify default namespace
 });
 
 console.log('[SOCKET.IO][ADMIN] Admin UI enabled - Access at https://admin.socket.io');
 console.log('[SOCKET.IO][ADMIN] Username: Admin | Password: Admin@1234');
-console.log('[SOCKET.IO][ADMIN] Server URL: https://aurastream-api.onrender.com');
+console.log('[SOCKET.IO][ADMIN] Server URL: https://aurastream-api.onrender.com or http://localhost:3001');
 
 // In-memory room membership tracking for diagnostics
 const roomsState = new Map<string, Set<string>>();
@@ -117,7 +116,25 @@ function removeFromRoomState(room: string, id: string) {
 // Socket.IO connection handler with auth-based join
 io.on('connection', (socket) => {
   let roomName: string | null = null;
-  console.log('[SOCKET][connect]', { id: socket.id, ip: (socket.handshake.address || '').toString(), ua: socket.handshake.headers['user-agent'] });
+  const transport = (socket as any)?.conn?.transport?.name || 'unknown';
+  const upgraded = (socket as any)?.conn?.upgraded || false;
+  console.log('[SOCKET][connect]', { 
+    id: socket.id, 
+    ip: (socket.handshake.address || '').toString(), 
+    ua: socket.handshake.headers['user-agent'],
+    transport,
+    upgraded,
+    protocol: socket.conn.protocol
+  });
+  
+  // Monitor transport upgrades
+  socket.conn.on('upgrade', () => {
+    console.log('[SOCKET][upgrade]', { id: socket.id, transport: (socket as any)?.conn?.transport?.name });
+  });
+  
+  socket.conn.on('upgradeError', (err) => {
+    console.error('[SOCKET][upgradeError]', { id: socket.id, error: err.message });
+  });
 
   // If client sent auth in handshake, join immediately
   try {
@@ -235,14 +252,48 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
-  if (roomName) {
-    removeFromRoomState(roomName, socket.id);
-    const members = io.sockets.adapter.rooms.get(roomName);
-    const count = members?.size || 0;
-    io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
-  }
-  console.log('[SOCKET][disconnect]', { id: socket.id, reason, transport: (socket as any)?.conn?.transport?.name, description: (socket as any)?.conn?.closeReason ?? (socket as any)?.conn?.closingReason ?? 'unknown' });
-});
+    if (roomName) {
+      removeFromRoomState(roomName, socket.id);
+      const members = io.sockets.adapter.rooms.get(roomName);
+      const count = members?.size || 0;
+      io.to(roomName).emit('roomUpdate', { room: roomName, members: Array.from(members || []), count });
+    }
+    
+    const transport = (socket as any)?.conn?.transport?.name || 'unknown';
+    const closeCode = (socket as any)?.conn?.closeCode;
+    const closeReason = (socket as any)?.conn?.closeReason || (socket as any)?.conn?.closingReason;
+    const protocol = socket.conn.protocol;
+    
+    console.log('[SOCKET][disconnect]', { 
+      id: socket.id, 
+      reason, 
+      transport, 
+      protocol,
+      closeCode,
+      closeReason,
+      roomName,
+      wasUpgraded: (socket as any)?.conn?.upgraded
+    });
+    
+    // Log specific transport error details
+    if (reason === 'transport error') {
+      console.error('[SOCKET][TRANSPORT_ERROR_ANALYSIS]', {
+        id: socket.id,
+        possibleCauses: [
+          'Network connectivity issues',
+          'Firewall blocking WebSocket',
+          'Proxy not supporting WebSocket',
+          'Server overload',
+          'Client-side network switching'
+        ],
+        suggestions: [
+          'Check client network stability',
+          'Verify WebSocket support in environment',
+          'Monitor server resource usage'
+        ]
+      });
+    }
+  });
 });
 
 // Express CORS to match Socket.IO (supports wildcards like https://*.vercel.app)
@@ -267,12 +318,10 @@ const corsMatcher = (origin: string, list: string[]) => {
   } catch { return false; }
 };
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    if (corsMatcher(origin, allowedOrigins)) return cb(null, true);
-    return cb(new Error('CORS blocked'));
-  },
-  credentials: true
+  origin: "*", // Allow all origins temporarily for admin UI debugging
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use((req, res, next) => {
   const isProd = process.env.NODE_ENV === 'production';
@@ -313,6 +362,22 @@ app.use((req, res, next) => {
 // Basic health check
 app.get('/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
+});
+
+// Admin UI status endpoint
+app.get('/admin/status', (_req, res) => {
+  const connectedSockets = io.sockets.sockets.size;
+  const rooms = Array.from(io.sockets.adapter.rooms.keys()).filter(room => !io.sockets.adapter.sids.has(room));
+  res.json({
+    adminUI: 'enabled',
+    credentials: { username: 'Admin', password: 'Admin@1234' },
+    connectedSockets,
+    rooms,
+    adminUrl: 'https://admin.socket.io',
+    serverUrl: process.env.NODE_ENV === 'production' 
+      ? 'https://aurastream-api.onrender.com' 
+      : 'http://localhost:3001'
+  });
 });
 
 // WebRTC ICE config endpoint (STUN/TURN)
