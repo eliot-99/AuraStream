@@ -4,8 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { Server as SocketIOServer } from 'socket.io';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { createClient } from 'redis';
+import { createAdapter } from '@socket.io/mongo-adapter';
 import { instrument } from '@socket.io/admin-ui';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -62,28 +61,24 @@ const io = new SocketIOServer(server, {
   maxHttpBufferSize: 1e6 // 1MB buffer size
 });
 
-// Optional: Redis adapter for multi-instance scale
+// MongoDB adapter setup (free alternative to Redis)
 (async () => {
   try {
-    let url = process.env.REDIS_URL || '';
-    if (url) {
-      // Auto-upgrade to TLS for Redis Cloud if plain redis:// provided
-      if (/redis-cloud|redns\./i.test(url) && !/^rediss:\/\//i.test(url)) {
-        url = url.replace(/^redis:\/\//i, 'rediss://');
-      }
-      const pubClient = createClient({ url });
-      const subClient = pubClient.duplicate();
-      pubClient.on('error', (err) => console.error('[REDIS][pub][error]', err?.message || err));
-      subClient.on('error', (err) => console.error('[REDIS][sub][error]', err?.message || err));
-      await pubClient.connect();
-      await subClient.connect();
-      io.adapter(createAdapter(pubClient, subClient));
-      console.log('[REDIS][SOCKET] Adapter attached');
+    const mongoUrl = process.env.MONGODB_URI || process.env.DATABASE_URL;
+    if (mongoUrl) {
+      // Use existing MongoDB connection for Socket.IO adapter
+      const adapter = createAdapter(mongoUrl, {
+        addCreatedAtField: true, // Add timestamp to events
+        collectionName: 'socket_events' // Custom collection name
+      });
+      io.adapter(adapter);
+      console.log('[SOCKET.IO][MONGO] MongoDB adapter attached successfully');
     } else {
-      console.log('[REDIS] REDIS_URL not set; running without adapter');
+      console.log('[SOCKET.IO] No MongoDB URL found, running in single-instance mode');
     }
   } catch (e: any) {
-    console.error('[REDIS][ERROR] Failed to init adapter:', e?.message || e);
+    console.error('[SOCKET.IO][MONGO][ERROR] Failed to init MongoDB adapter:', e?.message || e);
+    console.log('[SOCKET.IO] Falling back to single-instance mode');
   }
 })();
 
