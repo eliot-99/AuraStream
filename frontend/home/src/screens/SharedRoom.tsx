@@ -55,6 +55,7 @@ export default function SharedRoom() {
   const [turnStatus, setTurnStatus] = useState<'unknown'|'ok'|'fail'|'missing'>('unknown');
   const [turnMessage, setTurnMessage] = useState<string | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [showWebcamView, setShowWebcamView] = useState<boolean>(false);
 
   // Reset unread count when chat is opened
   useEffect(() => {
@@ -315,9 +316,11 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         // Update peer voice level and glow effect
         peerLevelRef.current = Math.max(0, Math.min(1, payload.level));
         const glow = document.getElementById('peer-glow');
+        const webcamGlow = document.getElementById('peer-webcam-glow');
         if (glow) {
           const opacity = 0.25 + peerLevelRef.current * 0.75;
           glow.style.opacity = String(Math.min(1, opacity));
+          if (webcamGlow) webcamGlow.style.opacity = String(Math.min(1, opacity * 0.8));
         }
       }
       if (payload.type === 'playback') {
@@ -496,9 +499,11 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             const rms = Math.sqrt(sum / data.length);
             peerLevelRef.current = Math.min(1, rms * 3.5); // Increased sensitivity for remote audio
             const glow = document.getElementById('peer-glow');
+            const webcamGlow = document.getElementById('peer-webcam-glow');
             if (glow) {
               const opacity = 0.25 + peerLevelRef.current * 0.75; // Better range 0.25-1.0
               glow.style.opacity = String(Math.min(1, opacity));
+              if (webcamGlow) webcamGlow.style.opacity = String(Math.min(1, opacity * 0.8));
             }
             requestAnimationFrame(loop);
           };
@@ -508,7 +513,9 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         console.warn('[peer-audio-level]', err); 
         // Fallback: ensure peer glow has minimum visibility
         const glow = document.getElementById('peer-glow');
+        const webcamGlow = document.getElementById('peer-webcam-glow');
         if (glow) glow.style.opacity = '0.25';
+        if (webcamGlow) webcamGlow.style.opacity = '0.2';
       }
     };
 
@@ -676,7 +683,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         const rms = Math.sqrt(sum / data.length);
         hostLevelRef.current = Math.min(1, rms * 2.5);
         const glow = document.getElementById('host-glow');
-        if (glow) glow.style.opacity = String((micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0));
+        const webcamGlow = document.getElementById('host-webcam-glow');
+        const glowOpacity = (micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0);
+        if (glow) glow.style.opacity = String(glowOpacity);
+        if (webcamGlow) webcamGlow.style.opacity = String(glowOpacity * 0.8);
         
         // Emit VU meter data for peer synchronization (throttled)
         const now = performance.now();
@@ -735,7 +745,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             const rms = Math.sqrt(sum / data.length);
             hostLevelRef.current = Math.min(1, rms * 2.5);
             const glow = document.getElementById('host-glow');
-            if (glow) glow.style.opacity = String((micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0));
+            const webcamGlow = document.getElementById('host-webcam-glow');
+            const glowOpacity = (micMutedRef.current ? 0.05 : 0.3) + hostLevelRef.current * (micMutedRef.current ? 0.4 : 1.0);
+            if (glow) glow.style.opacity = String(glowOpacity);
+            if (webcamGlow) webcamGlow.style.opacity = String(glowOpacity * 0.8);
             
             // Emit VU meter data for peer synchronization (throttled)
             const now = performance.now();
@@ -767,7 +780,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
       micMutedRef.current = next;
       const at = localStreamRef.current?.getAudioTracks()[0]; if (at) at.enabled = !next;
       const glow = document.getElementById('host-glow');
-      if (glow) glow.style.opacity = next ? '0.05' : '0.3';
+      const webcamGlow = document.getElementById('host-webcam-glow');
+      const glowOpacity = next ? '0.05' : '0.3';
+      if (glow) glow.style.opacity = glowOpacity;
+      if (webcamGlow) webcamGlow.style.opacity = String(parseFloat(glowOpacity) * 0.8);
       socketRef.current?.emit('control', { type: 'state', camOn, micMuted: next });
       return next;
     });
@@ -930,7 +946,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             {/* Self (host) */}
             <div className="flex flex-col items-center">
               <div className="relative">
-                <div className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44">
+                <div 
+                  className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44 cursor-pointer hover:scale-105 transition-transform"
+                  onClick={() => camOn && setShowWebcamView(!showWebcamView)}
+                >
                   <video ref={localTopRef} className="h-full w-full object-cover" playsInline muted style={{ display: camOn ? 'block' : 'none', transform: 'scaleX(-1)' }} />
                   {!camOn && (
                     myAvatar ? <img src={myAvatar} alt="Me" className="h-full w-full object-cover" /> : <div className="text-6xl">👤</div>
@@ -945,7 +964,10 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             {/* Peer */}
             <div className="flex flex-col items-center">
               <div className="relative">
-                <div className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44">
+                <div 
+                  className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44 cursor-pointer hover:scale-105 transition-transform"
+                  onClick={() => (remoteHasVideo || camOn) && setShowWebcamView(!showWebcamView)}
+                >
                   {/* Remote video */}
                   <video ref={remoteTopRef} className="h-full w-full object-cover" playsInline style={{ display: remoteHasVideo ? 'block' : 'none' }} />
                   {/* Placeholder with loader before peer joins */}
@@ -1010,8 +1032,8 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
             {/* End Room */}
             <button onClick={endRoom} aria-label="End Call" title="End Call" className="h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center bg-red-600/40 border-red-400 text-white shadow-lg">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
-                <path stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" d="M15 9L9 15M9 9l6 6"/>
+                <path d="M20 15.5c-1.25 0-2.45-.2-3.57-.57-.35-.11-.74-.03-1.02.25l-2.2 2.2c-2.83-1.44-5.15-3.75-6.59-6.59l2.2-2.2c.28-.28.36-.67.25-1.02C8.7 6.45 8.5 5.25 8.5 4c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1 0 9.39 7.61 17 17 17 .55 0 1-.45 1-1v-3.5c0-.55-.45-1-1-1z"/>
+                <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" d="M6 6l12 12"/>
               </svg>
             </button>
           </div>
@@ -1083,6 +1105,118 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
           )}
         </StarBorder>
       </main>
+
+      {/* Webcam View Overlay */}
+      {showWebcamView && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          {/* Main screen with blur effect */}
+          <div className="absolute inset-0 z-0">
+            <div className="w-full h-full bg-black/30 blur-md" />
+          </div>
+          
+          {/* Webcam rectangles */}
+          <div className="relative z-10 flex gap-8 items-center justify-center">
+            {/* Host/Local webcam rectangle */}
+            <div 
+              className="relative group cursor-pointer"
+              onClick={() => setShowWebcamView(false)}
+            >
+              <div className="relative w-80 h-60 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
+                <video 
+                  ref={localTopRef} 
+                  className="w-full h-full object-cover" 
+                  playsInline 
+                  muted 
+                  style={{ 
+                    display: camOn ? 'block' : 'none', 
+                    transform: 'scaleX(-1)' 
+                  }} 
+                />
+                {!camOn && (
+                  <div className="w-full h-full flex items-center justify-center">
+                    {myAvatar ? (
+                      <img src={myAvatar} alt="Me" className="w-32 h-32 rounded-full object-cover" />
+                    ) : (
+                      <div className="text-8xl">👤</div>
+                    )}
+                  </div>
+                )}
+                {/* Host glow effect synchronized with voice */}
+                <div 
+                  id="host-webcam-glow" 
+                  className="pointer-events-none absolute inset-0 rounded-2xl"
+                  style={{ 
+                    boxShadow: '0 0 40px rgba(34, 211, 238, 0.6)', 
+                    opacity: 0.5 
+                  }} 
+                />
+              </div>
+              <div className="mt-2 text-white text-center font-medium">{myName}</div>
+            </div>
+
+            {/* Peer webcam rectangle */}
+            <div 
+              className="relative group cursor-pointer"
+              onClick={() => setShowWebcamView(false)}
+            >
+              <div className="relative w-80 h-60 rounded-2xl overflow-hidden border-2 border-white/30 bg-black/40">
+                {peerPresent ? (
+                  <>
+                    <video 
+                      ref={remoteTopRef} 
+                      className="w-full h-full object-cover" 
+                      playsInline 
+                      style={{ display: remoteHasVideo ? 'block' : 'none' }} 
+                    />
+                    {!remoteHasVideo && (
+                      <div className="w-full h-full flex items-center justify-center">
+                        {peerAvatar ? (
+                          <img src={peerAvatar} alt="Peer" className="w-32 h-32 rounded-full object-cover" />
+                        ) : (
+                          <div className="text-8xl">👤</div>
+                        )}
+                      </div>
+                    )}
+                    {/* Peer glow effect synchronized with voice */}
+                    <div 
+                      id="peer-webcam-glow" 
+                      className="pointer-events-none absolute inset-0 rounded-2xl"
+                      style={{ 
+                        boxShadow: '0 0 40px rgba(236, 72, 153, 0.6)', 
+                        opacity: 0.45 
+                      }} 
+                    />
+                  </>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <div className="flex items-end gap-1">
+                      <div className="w-3 h-6 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-3 h-8 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '120ms' }} />
+                      <div className="w-3 h-12 bg-pink-500 rounded animate-bounce" style={{ animationDelay: '240ms' }} />
+                      <div className="w-3 h-8 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '360ms' }} />
+                      <div className="w-3 h-6 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '480ms' }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="mt-2 text-white text-center font-medium">
+                {peerPresent ? (peerName || 'Peer') : 'Waiting...'}
+              </div>
+            </div>
+          </div>
+
+          {/* Close button */}
+          <button
+            onClick={() => setShowWebcamView(false)}
+            className="absolute top-6 right-6 z-20 w-12 h-12 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition text-white"
+            aria-label="Close webcam view"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
