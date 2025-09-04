@@ -67,9 +67,13 @@ const io = new SocketIOServer(server, {
     const mongoUrl = process.env.MONGODB_URI || process.env.DATABASE_URL;
     if (mongoUrl) {
       // Use existing MongoDB connection for Socket.IO adapter
-      const adapter = createAdapter(mongoUrl, {
+      const mongoClient = new mongoose.mongo.MongoClient(mongoUrl);
+      await mongoClient.connect();
+      const db = mongoClient.db();
+      const collection = db.collection('socket_events');
+      
+      const adapter = createAdapter(collection, {
         addCreatedAtField: true, // Add timestamp to events
-        collectionName: 'socket_events' // Custom collection name
       });
       io.adapter(adapter);
       console.log('[SOCKET.IO][MONGO] MongoDB adapter attached successfully');
