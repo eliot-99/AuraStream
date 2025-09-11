@@ -157,6 +157,15 @@ io.on('connection', (socket) => {
         const secret = process.env.JWT_SECRET || 'dev';
         const decoded: any = jwt.verify(accessToken, secret);
         if (!decoded || decoded.room !== rn) throw new Error('room_mismatch');
+        
+        // Check room capacity (max 2 users for peer-to-peer)
+        const currentMembers = io.sockets.adapter.rooms.get(rn);
+        const currentCount = currentMembers?.size || 0;
+        if (currentCount >= 2) {
+          socket.emit('error', { error: 'room_full', message: 'The room is full' });
+          return;
+        }
+        
         socket.join(rn);
         addToRoomState(rn, socket.id);
         const members = io.sockets.adapter.rooms.get(rn);
@@ -166,6 +175,9 @@ io.on('connection', (socket) => {
         io.to(rn).emit('roomUpdate', { room: rn, members: Array.from(members || []), count });
       } catch (err) {
         console.warn('[SOCKET][auth-join][deny]', { id: socket.id, room: rn, hasToken: !!accessToken, err: (err as any)?.message });
+        if ((err as any)?.message !== 'room_full') {
+          socket.emit('error', { error: 'access_denied', reason: (err as any)?.message });
+        }
       }
     }
   } catch {}
@@ -175,6 +187,13 @@ io.on('connection', (socket) => {
       const requested = (payload.room ?? 'demo');
       const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken : null;
       const rn = (typeof requested === 'string' ? requested.trim() : String(requested)) || 'demo';
+      
+      // Don't join again if already in a room (prevents double counting)
+      if (roomName === rn) {
+        console.log('[SOCKET][handshake][already-joined]', { id: socket.id, room: rn });
+        return;
+      }
+      
       roomName = rn;
 
       // Verify signed JWT token for room access
@@ -187,6 +206,14 @@ io.on('connection', (socket) => {
       } catch (err) {
         console.warn('[SOCKET][handshake][deny]', { id: socket.id, room: rn, hasToken: !!accessToken, err: (err as any)?.message });
         socket.emit('error', { error: 'access_denied', reason: (err as any)?.message });
+        return;
+      }
+
+      // Check room capacity (max 2 users for peer-to-peer)
+      const currentMembers = io.sockets.adapter.rooms.get(rn);
+      const currentCount = currentMembers?.size || 0;
+      if (currentCount >= 2) {
+        socket.emit('error', { error: 'room_full', message: 'The room is full' });
         return;
       }
 

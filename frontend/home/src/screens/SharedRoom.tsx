@@ -245,6 +245,14 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
 }
 
     socket.on('error', async (err: any) => {
+      if (err?.error === 'room_full') {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'The room is full' } }));
+        // Optionally redirect back to lobby after a short delay
+        setTimeout(() => {
+          try { (location as any).hash = '#/'; } catch {}
+        }, 3000);
+        return;
+      }
       if (err?.error === 'access_denied') {
         const reason = String(err?.reason || '');
         if (/jwt/i.test(reason)) {
@@ -331,7 +339,14 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
       }
       if (payload.type === 'navigate' && (payload.mode === 'audio' || payload.mode === 'video')) {
         try {
-          if (payload.url && payload.name) sessionStorage.setItem('shared:media', JSON.stringify({ url: payload.url, name: payload.name, kind: payload.mode }));
+          // For remote peers, create a special media session that uses the WebRTC stream
+          const peerStreamId = 'webrtc-peer-stream';
+          sessionStorage.setItem('shared:media', JSON.stringify({ 
+            url: peerStreamId, // Special identifier for peer stream
+            name: payload.name || 'Shared Media', 
+            kind: payload.mode,
+            isRemoteStream: true
+          }));
           sessionStorage.setItem('shared:mode', payload.mode);
           if (payload.streamerId) sessionStorage.setItem('shared:streamerId', String(payload.streamerId));
         } catch {}
@@ -798,16 +813,28 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
     input.onchange = async () => {
       const file = input.files?.[0]; if (!file) return;
       const url = URL.createObjectURL(file);
-      try { sessionStorage.setItem('shared:media', JSON.stringify({ url, name: file.name, kind: file.type.startsWith('video/') ? 'video' : 'audio' })); } catch {}
-      const el = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio'); el.src = url; el.controls = true; await el.play().catch(()=>{});
       const mode = file.type.startsWith('video/') ? 'video' : 'audio';
+      
+      // Store media info for the local peer (with blob URL)
+      try { sessionStorage.setItem('shared:media', JSON.stringify({ url, name: file.name, kind: mode })); } catch {}
+      
+      const el = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio'); 
+      el.src = url; 
+      el.controls = true; 
+      await el.play().catch(()=>{});
+      
       if (mode === 'video') {
         const stream = (el as any).captureStream?.() || null;
         if (localTopRef.current) { localTopRef.current.srcObject = stream; localTopRef.current.muted = true; }
         if (localPanelRef.current) { localPanelRef.current.srcObject = stream; localPanelRef.current.muted = true; }
       }
-      const capture: MediaStream | null = (el as any).captureStream?.() || null; if (!capture) { alert('Browser does not support captureStream for local files'); return; }
+      const capture: MediaStream | null = (el as any).captureStream?.() || null; 
+      if (!capture) { 
+        alert('Browser does not support captureStream for local files'); 
+        return; 
+      }
       mediaStreamRef.current = capture;
+      
       // Replace existing senders with new capture tracks
       const pc = ensurePC();
       try {
@@ -821,9 +848,22 @@ async function refreshAccessTokenIfNeeded(reason?: string) {
         stopAllSenders(); capture.getTracks().forEach(t => pc.addTrack(t, capture));
       }
       await maybeNegotiate('choose-media');
-      // Persist role + navigate for both peers
-      try { sessionStorage.setItem('shared:mode', mode); sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || '')); } catch {}
-      socketRef.current?.emit('sync', { type: 'navigate', mode, url, name: file.name, streamerId: socketRef.current?.id });
+      
+      // Persist role + navigate for all peers (send streamerId and mode without blob URL)
+      try { 
+        sessionStorage.setItem('shared:mode', mode); 
+        sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || '')); 
+      } catch {}
+      
+      // Notify other peers about media streaming (without sending the blob URL)
+      socketRef.current?.emit('sync', { 
+        type: 'navigate', 
+        mode, 
+        name: file.name, 
+        streamerId: socketRef.current?.id 
+      });
+      
+      // Navigate locally
       try { (location as any).hash = mode === 'video' ? '#/video-shared' : '#/audio-shared'; } catch {}
     };
     input.click();

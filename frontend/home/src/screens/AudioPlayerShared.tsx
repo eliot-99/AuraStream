@@ -378,7 +378,13 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         if (!j) return false;
         const m = JSON.parse(j);
         if (!m || m.kind !== 'audio' || !m.url) return false;
-        setCurrentTrack({ name: m.name || 'Audio', url: m.url, cover: FALLBACK_COVER });
+        
+        // Handle WebRTC peer stream case
+        if (m.url === 'webrtc-peer-stream' && m.isRemoteStream) {
+          setCurrentTrack({ name: m.name || 'Shared Audio', url: 'webrtc-peer-stream', cover: FALLBACK_COVER });
+        } else {
+          setCurrentTrack({ name: m.name || 'Audio', url: m.url, cover: FALLBACK_COVER });
+        }
         return true;
       } catch { return false; }
     };
@@ -412,10 +418,21 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     if (!currentTrack) return;
     const a = audioRef.current;
     if (!a) return;
-    // Set the audio src explicitly to ensure updates
-    a.pause();
-    a.src = currentTrack.url || '';
-    a.load();
+    // Handle WebRTC stream case vs normal file case
+    if (currentTrack.url === 'webrtc-peer-stream') {
+      // Use the WebRTC peer stream instead of a file URL
+      const peerStream = (window as any).__peerStream as MediaStream | null;
+      if (peerStream) {
+        a.pause();
+        (a as any).srcObject = peerStream;
+        a.load();
+      }
+    } else {
+      // Normal file URL case
+      a.pause();
+      a.src = currentTrack.url || '';
+      a.load();
+    }
     const start = async () => {
       try {
         await ensureAudioReady();
@@ -626,12 +643,37 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
     try {
       if (!(window as any).sharedSocket) {
         const { io } = require('socket.io-client');
+        const room = sessionStorage.getItem('room') || 'demo';
+        const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
         const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-        const s = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io' });
-        ;(window as any).sharedSocket = s;
+        
+        const s = io(SOCKET_BASE || '/', { 
+          transports: ['websocket','polling'], 
+          path: '/socket.io',
+          withCredentials: true,
+          auth: { room, accessToken }
+        });
+        (window as any).sharedSocket = s;
+        
         s.on('connect', () => {
-          const room = sessionStorage.getItem('room') || 'demo';
-          s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+          console.log('AudioPlayerShared: Socket connected');
+          s.emit('handshake', { 
+            room, 
+            name: sessionStorage.getItem(`room:${room}:myName`) || undefined, 
+            avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined,
+            accessToken 
+          });
+        });
+        
+        s.on('error', (err: any) => {
+          console.error('AudioPlayerShared: Socket error:', err);
+          if (err?.error === 'room_full') {
+            alert('The room is full');
+            location.hash = '#/';
+          } else if (err?.error === 'access_denied') {
+            alert('Access denied to room');
+            location.hash = '#/';
+          }
         });
         s.on('control', (payload: any) => {
           if (payload?.type === 'state') {

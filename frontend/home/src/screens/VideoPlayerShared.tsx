@@ -247,47 +247,102 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
     // Join socket room for control sync
     try {
-      const { io } = require('socket.io-client');
-      const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-      const s = io(SOCKET_BASE || '/', { transports: ['websocket','polling'], path: '/socket.io', withCredentials: true });
-      ;(window as any).sharedSocket = s;
-      s.on('connect', () => {
+      if (!(window as any).sharedSocket) {
+        const { io } = require('socket.io-client');
         const room = sessionStorage.getItem('room') || 'demo';
-        s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
-      });
-      s.on('control', (payload: any) => {
-        if (payload?.type === 'state') {
-          if (typeof payload.micMuted === 'boolean') setMicUiMuted(payload.micMuted);
-          if (typeof payload.camOn === 'boolean') {
-            setCamOn(payload.camOn);
-            setPeerCamOn(payload.camOn); // Track peer's camera state
+        const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
+        const SOCKET_BASE = (import.meta as any).env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        
+        const s = io(SOCKET_BASE || '/', { 
+          transports: ['websocket','polling'], 
+          path: '/socket.io', 
+          withCredentials: true,
+          auth: { room, accessToken }
+        });
+        (window as any).sharedSocket = s;
+        
+        s.on('connect', () => {
+          console.log('VideoPlayerShared: Socket connected');
+          s.emit('handshake', { 
+            room, 
+            name: sessionStorage.getItem(`room:${room}:myName`) || undefined, 
+            avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined,
+            accessToken 
+          });
+        });
+        
+        s.on('error', (err: any) => {
+          console.error('VideoPlayerShared: Socket error:', err);
+          if (err?.error === 'room_full') {
+            alert('The room is full');
+            location.hash = '#/';
+          } else if (err?.error === 'access_denied') {
+            alert('Access denied to room');
+            location.hash = '#/';
           }
-        }
-      });
-      // Receive chat messages into the local drawer list
-      s.on('sync', async (payload: any) => {
-        try {
-          if (payload && payload.type === 'playback') {
-            const v = videoRef.current; if (!v) return;
-            if (payload.action === 'play') { try { await v.play(); setPlaying(true); } catch {} }
-            if (payload.action === 'pause') { try { v.pause(); setPlaying(false); } catch {} }
-            if (payload.action === 'seek' && typeof payload.time === 'number') { v.currentTime = payload.time; }
-            return;
+        });
+        
+        s.on('control', (payload: any) => {
+          if (payload?.type === 'state') {
+            if (typeof payload.micMuted === 'boolean') {
+              setMicUiMuted(payload.micMuted);
+            }
+            if (typeof payload.camOn === 'boolean') {
+              setPeerCamOn(payload.camOn); // Track peer's camera state
+            }
           }
-          if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
-            (window as any).__sharedChat = [
-              ...((window as any).__sharedChat || []),
-              { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
-            ];
-            const box = document.getElementById('chatScroll');
-            if (box) box.scrollTop = box.scrollHeight;
-          } else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
-            setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+        });
+        
+        // Receive chat messages and other sync events
+        s.on('sync', async (payload: any) => {
+          try {
+            if (payload && payload.type === 'playback') {
+              const v = videoRef.current; 
+              if (!v) return;
+              if (payload.action === 'play') { 
+                try { 
+                  await v.play(); 
+                  setPlaying(true); 
+                } catch {} 
+              }
+              if (payload.action === 'pause') { 
+                try { 
+                  v.pause(); 
+                  setPlaying(false); 
+                } catch {} 
+              }
+              if (payload.action === 'seek' && typeof payload.time === 'number') { 
+                v.currentTime = payload.time; 
+              }
+              return;
+            }
+            if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
+              (window as any).__sharedChat = [
+                ...((window as any).__sharedChat || []),
+                { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
+              ];
+              const box = document.getElementById('chatScroll');
+              if (box) box.scrollTop = box.scrollHeight;
+            } else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+              setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+            }
+          } catch (e) {
+            console.error('VideoPlayerShared: Error handling sync:', e);
           }
-        } catch {}
-      });
-      return () => { try { s.disconnect(); } catch {} };
-    } catch {}
+        });
+        
+        return () => { 
+          try { 
+            s.disconnect(); 
+            if ((window as any).sharedSocket === s) {
+              (window as any).sharedSocket = null;
+            }
+          } catch {} 
+        };
+      }
+    } catch (e) {
+      console.error('VideoPlayerShared: Error initializing socket:', e);
+    }
 
     // Check for existing peer video stream (from SharedRoom WebRTC connection)
     const checkPeerStream = () => {
@@ -482,18 +537,84 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     setSelectedAudio(lang || '');
   };
 
-  // Load provided src (object URL or remote) if passed
+  // Load provided src (object URL, remote, or WebRTC stream) if passed
   useEffect(() => {
-    if (src) {
+    // Handle session storage for shared media first
+    let actualSrc = src;
+    try {
+      const j = sessionStorage.getItem('shared:media');
+      if (j) {
+        const m = JSON.parse(j);
+        if (m && m.kind === 'video' && m.url) {
+          actualSrc = m.url;
+        }
+      }
+    } catch {}
+    
+    if (actualSrc) {
       const v = videoRef.current;
       const d = decoyRef.current;
-      if (v) {
-        v.src = src;
-        v.load();
-      }
-      if (d) {
-        d.src = src;
-        d.load();
+      
+      // Check if this is a WebRTC peer stream
+      if (actualSrc === 'webrtc-peer-stream') {
+        // Use retry logic for WebRTC peer stream
+        let retries = 0;
+        const maxRetries = 15; // Increased retries for better reliability
+        
+        const connectPeerStream = () => {
+          const peerStream = (window as any).__peerStream as MediaStream | null;
+          if (peerStream && v) {
+            try {
+              (v as any).srcObject = peerStream;
+              v.load();
+              // Also set up decoy for ambient effects if present
+              if (d) {
+                (d as any).srcObject = peerStream;
+                d.load();
+              }
+              console.log('WebRTC peer stream connected successfully');
+              return true;
+            } catch (e) {
+              console.error('Error connecting peer stream:', e);
+              return false;
+            }
+          }
+          return false;
+        };
+        
+        // Try immediately first
+        if (!connectPeerStream()) {
+          // If not available immediately, set up retry mechanism
+          console.log('WebRTC peer stream not immediately available, retrying...');
+          const retryInterval = setInterval(() => {
+            retries++;
+            if (connectPeerStream()) {
+              clearInterval(retryInterval);
+              console.log(`WebRTC peer stream connected after ${retries} retries`);
+            } else if (retries >= maxRetries) {
+              clearInterval(retryInterval);
+              console.warn('WebRTC peer stream not available after maximum retries');
+              // Show a user-friendly message
+              const v = videoRef.current;
+              if (v) {
+                v.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:white;background:rgba(0,0,0,0.8)">Connecting to peer stream...</div>';
+              }
+            }
+          }, 400);
+          
+          // Return cleanup function
+          return () => clearInterval(retryInterval);
+        }
+      } else {
+        // Normal file URL case
+        if (v) {
+          v.src = actualSrc;
+          v.load();
+        }
+        if (d) {
+          d.src = actualSrc;
+          d.load();
+        }
       }
     }
   }, [src]);
