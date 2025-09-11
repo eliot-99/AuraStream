@@ -153,3 +153,159 @@ select:-moz-autofill {
   0% { opacity: 0.3; }
   100% { opacity: 0.8; }
 }
+
+/* Range input styling - remove default rectangles/borders */
+input[type="range"] {
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 100% !important;
+}
+
+/* Webkit (Chrome, Safari) range input track */
+input[type="range"]::-webkit-slider-track {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  height: 2px !important;
+  width: 100% !important;
+}
+
+/* Webkit (Chrome, Safari) range input thumb */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  height: 14px !important;
+  width: 14px !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  cursor: pointer !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.15s ease !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: rgba(255, 255, 255, 1) !important;
+  transform: scale(1.1) !important;
+}
+
+/* Firefox range input track */
+input[type="range"]::-moz-range-track {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  height: 2px !important;
+  width: 100% !important;
+}
+
+/* Firefox range input thumb */
+input[type="range"]::-moz-range-thumb {
+  -moz-appearance: none !important;
+  height: 14px !important;
+  width: 14px !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  cursor: pointer !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.15s ease !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+  background: rgba(255, 255, 255, 1) !important;
+  transform: scale(1.1) !important;
+}
+
+/* Firefox range input progress (filled part) */
+input[type="range"]::-moz-range-progress {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  height: 2px !important;
+}
+
+/* Edge/IE range input track */
+input[type="range"]::-ms-track {
+  background: transparent !important;
+  border-color: transparent !important;
+  border-width: 6px 0 !important;
+  color: transparent !important;
+  height: 2px !important;
+  width: 100% !important;
+}
+
+input[type="range"]::-ms-fill-lower {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+}
+
+input[type="range"]::-ms-fill-upper {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+}
+
+/* Edge/IE range input thumb */
+input[type="range"]::-ms-thumb {
+  height: 14px !important;
+  width: 14px !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  cursor: pointer !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.15s ease !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+input[type="range"]::-ms-thumb:hover {
+  background: rgba(255, 255, 255, 1) !important;
+  transform: scale(1.1) !important;
+}
+
+/* Focus states - remove default browser focus indicators */
+input[type="range"]:focus {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+input[type="range"]:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+input[type="range"]:focus::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3), 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Additional resets to ensure no browser defaults interfere */
+input[type="range"]:active {
+  outline: none !important;
+  border: none !important;
+}
+
+input[type="range"]:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+}
