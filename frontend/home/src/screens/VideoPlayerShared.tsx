@@ -314,6 +314,38 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
               if (payload.action === 'seek' && typeof payload.time === 'number') { 
                 v.currentTime = payload.time; 
               }
+              if (payload.action === 'stop') {
+                try {
+                  v.pause();
+                  v.removeAttribute('src');
+                  if ((v as any).srcObject) {
+                    (v as any).srcObject = null;
+                  }
+                  v.load();
+                  setPlaying(false);
+                  // Navigate back to SharedRoom  
+                  setTimeout(() => {
+                    try {
+                      location.hash = '#/shared';
+                    } catch {
+                      window.history.back();
+                    }
+                  }, 100);
+                } catch {}
+              }
+              return;
+            }
+            if (payload && payload.type === 'navigation') {
+              if (payload.action === 'back_to_shared') {
+                try {
+                  stopAll();
+                  setTimeout(() => {
+                    location.hash = '#/shared';
+                  }, 100);
+                } catch {
+                  window.history.back();
+                }
+              }
               return;
             }
             if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
@@ -460,28 +492,81 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
   // Controls
   const togglePlay = async () => {
-    if (!isStreamer) return;
-    const v = videoRef.current!;
+    if (!isStreamer) {
+      console.log('Only the streamer can control playback');
+      return;
+    }
+    const v = videoRef.current;
+    if (!v) {
+      console.error('Video element not available');
+      return;
+    }
+    
     try {
       if (v.paused) {
+        console.log('Starting video playback');
         try {
           const nodes = Array.from(document.querySelectorAll('audio, video')) as HTMLMediaElement[];
-          nodes.forEach(n => { if (n !== v) { try { n.pause(); } catch {}; try { (n as any).srcObject = null; } catch {}; }});
+          nodes.forEach(n => { 
+            if (n !== v) { 
+              try { n.pause(); } catch {}; 
+              try { (n as any).srcObject = null; } catch {}; 
+            }
+          });
         } catch {}
+        
+        // For WebRTC streams, ensure srcObject is set
+        if (!v.src && !(v as any).srcObject) {
+          const peerStream = (window as any).__peerStream as MediaStream | null;
+          if (peerStream) {
+            (v as any).srcObject = peerStream;
+          }
+        }
+        
         await v.play();
         setPlaying(true);
-        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); 
+        } catch {}
       } else {
+        console.log('Pausing video playback');
         v.pause();
         setPlaying(false);
-        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); 
+        } catch {}
       }
-    } catch {}
+    } catch (e) {
+      console.error('Error toggling video playback:', e);
+    }
   };
 
 
-  const handleSeek = (t: number) => { if (!isStreamer) return; const v = videoRef.current; if (!v) return; const nt = Math.max(0, Math.min(v.duration || t, t)); v.currentTime = nt; try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); } catch {} };
-  const handleSkip = (d: number) => { const v = videoRef.current; if (!v) return; handleSeek((v.currentTime || 0) + d); };
+  const handleSeek = (t: number) => { 
+    if (!isStreamer) {
+      console.log('Only the streamer can control playback');
+      return;
+    }
+    const v = videoRef.current; 
+    if (!v) {
+      console.error('Video element not available for seeking');
+      return;
+    }
+    const nt = Math.max(0, Math.min(v.duration || t, t)); 
+    v.currentTime = nt; 
+    try { 
+      (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); 
+    } catch (e) {
+      console.error('Error seeking video:', e);
+    }
+  };
+  
+  const handleSkip = (d: number) => { 
+    if (!isStreamer) return;
+    const v = videoRef.current; 
+    if (!v) return; 
+    handleSeek((v.currentTime || 0) + d); 
+  };
 
   const enterFS = async () => { const el: any = videoRef.current; try { await el?.requestFullscreen?.(); setIsFS(true); } catch {} };
   const exitFS = async () => { try { await document.exitFullscreen(); setIsFS(false); } catch {} };
@@ -490,11 +575,37 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
   // Stop and clear video (and decoy) to avoid background playback
   const stopAll = () => {
     try {
-      const v = videoRef.current; const d = decoyRef.current;
-      if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
-      if (d) { d.pause(); d.removeAttribute('src'); d.load(); }
+      const v = videoRef.current; 
+      const d = decoyRef.current;
+      if (v) { 
+        v.pause(); 
+        v.removeAttribute('src'); 
+        if ((v as any).srcObject) {
+          (v as any).srcObject = null;
+        }
+        v.load(); 
+      }
+      if (d) { 
+        d.pause(); 
+        d.removeAttribute('src'); 
+        if ((d as any).srcObject) {
+          (d as any).srcObject = null;
+        }
+        d.load(); 
+      }
       setPlaying(false);
-    } catch {}
+      
+      // Notify peers that streaming has stopped
+      try { 
+        (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'stop' }); 
+      } catch {}
+      
+      // Clear shared media state
+      sessionStorage.removeItem('shared:media');
+      sessionStorage.removeItem('shared:mode');
+    } catch (e) {
+      console.error('Error stopping video:', e);
+    }
   };
 
   // Subtitle toggling and track switching
@@ -594,11 +705,8 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
             } else if (retries >= maxRetries) {
               clearInterval(retryInterval);
               console.warn('WebRTC peer stream not available after maximum retries');
-              // Show a user-friendly message
-              const v = videoRef.current;
-              if (v) {
-                v.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:white;background:rgba(0,0,0,0.8)">Connecting to peer stream...</div>';
-              }
+              // Set error state
+              console.error('Unable to connect to peer stream. Please check your connection and try again.');
             }
           }, 400);
           
@@ -645,17 +753,37 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
     };
 
     const onPlay = () => {
-      try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
+      setPlaying(true);
+      // Only streamers emit sync events  
+      if (isStreamer) {
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); 
+        } catch {}
+      }
       if (!decoy) return;
       try { decoy.playbackRate = v.playbackRate; } catch {}
       try { if (Math.abs((decoy.currentTime || 0) - (v.currentTime || 0)) > 0.15) decoy.currentTime = v.currentTime; } catch {}
       try { decoy.play(); } catch {}
     };
 
-    const onPause = () => { try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}; try { decoy?.pause(); } catch {} };
+    const onPause = () => { 
+      setPlaying(false);
+      // Only streamers emit sync events
+      if (isStreamer) {
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); 
+        } catch {}
+      }
+      try { decoy?.pause(); } catch {} 
+    };
 
     const onSeeked = () => {
-      try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime }); } catch {}
+      // Only streamers emit sync events
+      if (isStreamer) {
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime }); 
+        } catch {}
+      }
       if (!decoy) return;
       try { decoy.currentTime = v.currentTime; } catch {}
     };
@@ -717,10 +845,30 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
 
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between">
-        <button onClick={() => { try { stopAll(); location.hash = '#/shared'; } catch { try { stopAll(); } catch {}; (onBack ? onBack() : window.history.back()); } }} className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition" aria-label="Back">
+        <button onClick={() => { 
+          try { 
+            stopAll(); 
+            // Notify other peers to also go back
+            (window as any).sharedSocket?.emit('sync', { type: 'navigation', action: 'back_to_shared' });
+            setTimeout(() => {
+              location.hash = '#/shared'; 
+            }, 100);
+          } catch { 
+            try { stopAll(); } catch {}; 
+            (onBack ? onBack() : window.history.back()); 
+          } 
+        }} className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition" aria-label="Back">
           <Icon.Back className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-2">
+          {/* Streamer status indicator */}
+          <div className={`px-3 py-1 rounded-full text-xs font-medium border ${
+            isStreamer 
+            ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' 
+            : 'bg-blue-500/20 border-blue-400/40 text-blue-300'
+          }`}>
+            {isStreamer ? '🎬 Streamer' : '👁️ Viewer'}
+          </div>
           {!showDrawer && (
             <button onClick={() => setShowDrawer(true)} aria-label="Call Controls" title="Call Controls" className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition">
               <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z"/></svg>
@@ -757,16 +905,56 @@ export default function VideoPlayer({ onBack, src }: { onBack?: () => void; src?
               {/* debug click feedback */}
               {/* Transport group */}
               <div className="flex items-center gap-2">
-                <button onClick={() => handleSkip(-5)} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Back 5s"><Icon.SkipBack className="w-5 h-5" /></button>
-                <button onClick={togglePlay} className="h-12 w-12 rounded-full bg-cyan-400/30 border border-white/30 flex items-center justify-center hover:scale-110 transition"><TransportIcon className="w-7 h-7" /></button>
-                <button onClick={() => handleSkip(5)} className="h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition" title="Forward 5s"><Icon.SkipFwd className="w-5 h-5" /></button>
+                <button 
+                  onClick={() => handleSkip(-5)} 
+                  disabled={!isStreamer}
+                  className={`h-10 w-10 rounded-full border flex items-center justify-center transition ${
+                    isStreamer ? 'bg-white/10 border-white/20 hover:scale-105 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+                  }`} 
+                  title={isStreamer ? "Back 5s" : "Only streamer can control playback"}
+                >
+                  <Icon.SkipBack className="w-5 h-5" />
+                </button>
+                <button 
+                  onClick={togglePlay} 
+                  disabled={!isStreamer}
+                  className={`h-12 w-12 rounded-full border flex items-center justify-center transition ${
+                    isStreamer ? 'bg-cyan-400/30 border-white/30 hover:scale-110 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+                  }`}
+                  title={isStreamer ? (playing ? "Pause" : "Play") : "Only streamer can control playback"}
+                >
+                  <TransportIcon className="w-7 h-7" />
+                </button>
+                <button 
+                  onClick={() => handleSkip(5)} 
+                  disabled={!isStreamer}
+                  className={`h-10 w-10 rounded-full border flex items-center justify-center transition ${
+                    isStreamer ? 'bg-white/10 border-white/20 hover:scale-105 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+                  }`} 
+                  title={isStreamer ? "Forward 5s" : "Only streamer can control playback"}
+                >
+                  <Icon.SkipFwd className="w-5 h-5" />
+                </button>
               </div>
               {/* Timeline (no text labels) */}
               <div className="flex items-center gap-3 flex-1">
                 <div className="relative w-full h-6">
                   <div className="absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" />
                   <div className="absolute inset-y-0 left-0 my-[10px] rounded-full" style={{ width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(59,130,246,0.95), rgba(29,78,216,0.95))', boxShadow: '0 0 18px rgba(59,130,246,0.45), 0 0 18px rgba(29,78,216,0.35)' }} />
-                  <input type="range" min={0} max={progress.dur || 0} step={0.01} value={progress.cur} onChange={(e) => handleSeek(Number(e.target.value))} className="absolute inset-0 w-full appearance-none bg-transparent h-6" aria-label="Seek" />
+                  <input 
+                    type="range" 
+                    min={0} 
+                    max={progress.dur || 0} 
+                    step={0.01} 
+                    value={progress.cur} 
+                    onChange={(e) => handleSeek(Number(e.target.value))} 
+                    disabled={!isStreamer}
+                    className={`absolute inset-0 w-full appearance-none bg-transparent h-6 ${
+                      isStreamer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                    }`} 
+                    aria-label="Seek" 
+                    title={isStreamer ? "Seek video" : "Only streamer can control playback"}
+                  />
                 </div>
               </div>
               {/* Secondary: fullscreen, subs toggle, subs lang, audio lang, volume */}

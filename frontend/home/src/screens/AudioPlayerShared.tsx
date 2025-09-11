@@ -593,29 +593,61 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
 
   const handlePlayPause = async () => {
     // Only streamer controls playback; listener ignores clicks
-    if (!isStreamer) return;
+    if (!isStreamer) {
+      console.log('Only the streamer can control playback');
+      return;
+    }
     try {
       await ensureAudioReady();
-      const a = audioRef.current!;
+      const a = audioRef.current;
+      if (!a) {
+        console.error('Audio element not available');
+        return;
+      }
+      
       if (a.paused) {
-        try { Array.from(document.querySelectorAll('video')).forEach(v => { try { v.pause(); } catch {}; }); } catch {}
-        await a.play(); setPlaying(true);
-        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); } catch {}
+        console.log('Starting audio playback');
+        try { 
+          Array.from(document.querySelectorAll('video')).forEach(v => { 
+            try { v.pause(); } catch {}; 
+          }); 
+        } catch {}
+        await a.play(); 
+        setPlaying(true);
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'play' }); 
+        } catch {}
       } else {
-        a.pause(); setPlaying(false);
-        try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); } catch {}
+        console.log('Pausing audio playback');
+        a.pause(); 
+        setPlaying(false);
+        try { 
+          (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'pause' }); 
+        } catch {}
       }
     } catch (e: any) {
+      console.error('Error in handlePlayPause:', e);
       setError(e?.message || 'Playback failed');
     }
   };
 
   const handleSeek = (t: number) => {
-    if (!isStreamer) return;
-    const a = audioRef.current; if (!a) return;
+    if (!isStreamer) {
+      console.log('Only the streamer can control playback');
+      return;
+    }
+    const a = audioRef.current; 
+    if (!a) {
+      console.error('Audio element not available for seeking');
+      return;
+    }
     const nt = Math.max(0, Math.min(a.duration || t, t));
     a.currentTime = nt;
-    try { (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); } catch {}
+    try { 
+      (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt }); 
+    } catch (e) {
+      console.error('Error seeking audio:', e);
+    }
   };
 
   const handleSkip = (delta: number) => {
@@ -698,12 +730,32 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
                   // Navigate back to SharedRoom
                   setTimeout(() => {
                     try {
-                      window.location.hash = '#/shared-room';
+                      window.location.hash = '#/shared';
                     } catch {
                       window.history.back();
                     }
                   }, 100);
                 } catch {} 
+              }
+              return;
+            }
+            // Handle navigation events
+            if (payload && payload.type === 'navigation') {
+              if (payload.action === 'back_to_shared') {
+                try {
+                  const a = audioRef.current;
+                  if (a) {
+                    a.pause();
+                    a.removeAttribute('src');
+                    a.load();
+                  }
+                  setPlaying(false);
+                  setTimeout(() => {
+                    location.hash = '#/shared';
+                  }, 100);
+                } catch {
+                  window.history.back();
+                }
               }
               return;
             }
@@ -851,22 +903,25 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
                 a.removeAttribute('src'); 
                 a.load(); 
               } 
-              // Notify peer to stop audio
+              // Notify peers to also go back and stop audio
               (window as any).sharedSocket?.emit('sync', { type: 'playback', action: 'stop' });
+              (window as any).sharedSocket?.emit('sync', { type: 'navigation', action: 'back_to_shared' });
               // Clear shared media state
               sessionStorage.removeItem('shared:media');
               sessionStorage.removeItem('shared:mode');
             } catch {}; 
             // Navigate back
-            if (onBack) {
-              onBack();
-            } else {
-              try {
-                window.location.hash = '#/shared-room';
-              } catch {
-                window.history.back();
+            setTimeout(() => {
+              if (onBack) {
+                onBack();
+              } else {
+                try {
+                  window.location.hash = '#/shared';
+                } catch {
+                  window.history.back();
+                }
               }
-            }
+            }, 100);
           }}
           aria-label="Back"
           className="h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition"
@@ -874,6 +929,14 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
           <Icon.Back className="w-5 h-5" />
         </button>
         <div className="flex items-center gap-2">
+          {/* Streamer status indicator */}
+          <div className={`px-3 py-1 rounded-full text-xs font-medium border ${
+            isStreamer 
+            ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' 
+            : 'bg-blue-500/20 border-blue-400/40 text-blue-300'
+          }`}>
+            {isStreamer ? '🎵 Streamer' : '👂 Listener'}
+          </div>
           <button
             onClick={() => { setShowDrawer(true); }}
             aria-label="Call Controls"
@@ -898,13 +961,40 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
         <div className="w-full max-w-6xl mx-auto flex items-center gap-2 sm:gap-4 px-2 sm:px-3 py-2 sm:py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
           {/* Transport group */}
           <div className="flex items-center gap-2">
-            <button onClick={() => handleSkip(-5)} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Back 5s">
+            <button 
+              onClick={() => handleSkip(-5)} 
+              disabled={!isStreamer}
+              className={`h-10 w-10 rounded-full border flex items-center justify-center transition ${
+                isStreamer 
+                ? 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:scale-105 hover:from-white/25 hover:to-white/10 text-white' 
+                : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+              }`} 
+              title={isStreamer ? "Back 5s" : "Only streamer can control playback"}
+            >
               <Icon.SkipBack className="w-5 h-5" />
             </button>
-            <button onClick={handlePlayPause} className="h-12 w-12 rounded-full bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border border-white/30 flex items-center justify-center hover:scale-110 transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+            <button 
+              onClick={handlePlayPause} 
+              disabled={!isStreamer}
+              className={`h-12 w-12 rounded-full border flex items-center justify-center transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm ${
+                isStreamer 
+                ? 'bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border-white/30 hover:scale-110 text-white' 
+                : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+              }`}
+              title={isStreamer ? (playing ? "Pause" : "Play") : "Only streamer can control playback"}
+            >
               {playing ? <Icon.Pause className="w-7 h-7" /> : <Icon.Play className="w-7 h-7" />}
             </button>
-            <button onClick={() => handleSkip(5)} className="h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition" title="Forward 5s">
+            <button 
+              onClick={() => handleSkip(5)} 
+              disabled={!isStreamer}
+              className={`h-10 w-10 rounded-full border flex items-center justify-center transition ${
+                isStreamer 
+                ? 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:scale-105 hover:from-white/25 hover:to-white/10 text-white' 
+                : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'
+              }`} 
+              title={isStreamer ? "Forward 5s" : "Only streamer can control playback"}
+            >
               <Icon.SkipFwd className="w-5 h-5" />
             </button>
           </div>
@@ -925,8 +1015,12 @@ export default function AudioPlayerShared({ onBack, src, name }: Props) {
                 step={0.01}
                 value={progress.cur}
                 onChange={(e) => handleSeek(Number(e.target.value))}
-                className="absolute inset-0 w-full appearance-none bg-transparent h-6"
+                disabled={!isStreamer}
+                className={`absolute inset-0 w-full appearance-none bg-transparent h-6 ${
+                  isStreamer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                }`}
                 aria-label="Seek"
+                title={isStreamer ? "Seek audio" : "Only streamer can control playback"}
               />
             </div>
             <span className="text-[11px] tabular-nums w-14 text-white/90 text-right">{formatTime(progress.dur)}</span>
