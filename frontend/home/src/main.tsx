@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
+import LoadingScreen from './components/ui/LoadingScreen';
 import Home from './screens/Home';
 import SoloSelect from './screens/SoloSelect';
 import AudioPlayer from './screens/AudioPlayer';
@@ -15,12 +16,24 @@ import VideoPlayerShared from './screens/VideoPlayerShared';
 import About from './screens/About';
 
 function App() {
-  const [screen, setScreen] = React.useState<'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'audio-shared' | 'video-shared' | 'about'>('home');
+  const [screen, setScreen] = React.useState<'loading' | 'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'audio-shared' | 'video-shared' | 'about'>('loading');
   const [media, setMedia] = React.useState<{ url: string; name: string; kind: 'audio' | 'video' } | null>(null);
 
-  // Simple hash-router to reach Auth before Together
+  // Loading screen timer
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setScreen('home');
+    }, 3000); // Show loading for 3 seconds
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Simple hash-router to reach Auth before Together (after loading)
   React.useEffect(() => {
     const apply = () => {
+      // Don't interfere with loading screen
+      if (screen === 'loading') return;
+      
       const token = localStorage.getItem('auth');
       if (location.hash.startsWith('#/shared')) {
         setScreen(token ? 'shared' : 'auth');
@@ -45,7 +58,11 @@ function App() {
     apply();
     window.addEventListener('hashchange', apply);
     return () => window.removeEventListener('hashchange', apply);
-  }, []);
+  }, [screen]);
+
+  if (screen === 'loading') {
+    return <LoadingScreen />;
+  }
 
   if (screen === 'home') {
     return <Home onStartSolo={() => setScreen('solo')} />;
