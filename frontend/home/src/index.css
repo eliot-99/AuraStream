@@ -86,3 +86,70 @@ select:-moz-autofill {
   0% { background-position: -200% center; }
   100% { background-position: 200% center; }
 }
+
+/* Enhanced card animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-4px) scale(1.01); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { 
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.2), 
+                0 0 40px rgba(139, 92, 246, 0.1),
+                0 8px 32px rgba(0, 0, 0, 0.3);
+  }
+  50% { 
+    box-shadow: 0 0 30px rgba(139, 92, 246, 0.4), 
+                0 0 60px rgba(139, 92, 246, 0.2),
+                0 12px 48px rgba(0, 0, 0, 0.4);
+  }
+}
+
+@keyframes shimmer {
+  0% { 
+    background-position: -1000px 0; 
+  }
+  100% { 
+    background-position: 1000px 0; 
+  }
+}
+
+@keyframes border-dance {
+  0%, 100% { 
+    background-position: 0% 50%; 
+  }
+  50% { 
+    background-position: 100% 50%; 
+  }
+}
+
+@keyframes tech-float {
+  0%, 100% { 
+    transform: translateY(0px) rotate(0deg); 
+  }
+  33% { 
+    transform: translateY(-2px) rotate(1deg); 
+  }
+  66% { 
+    transform: translateY(1px) rotate(-1deg); 
+  }
+}
+
+/* Enhanced stars for tech logos */
+.tech-stars-layer {
+  background-image: 
+    radial-gradient(2px 2px at 20px 30px, #fff, transparent),
+    radial-gradient(2px 2px at 40px 70px, rgba(255,255,255,0.8), transparent),
+    radial-gradient(1px 1px at 90px 40px, #fff, transparent),
+    radial-gradient(1px 1px at 130px 80px, rgba(255,255,255,0.6), transparent),
+    radial-gradient(2px 2px at 160px 30px, #fff, transparent);
+  background-repeat: repeat;
+  background-size: 200px 200px;
+  animation: twinkle 8s ease-in-out infinite alternate;
+}
+
+@keyframes twinkle {
+  0% { opacity: 0.3; }
+  100% { opacity: 0.8; }
+}
