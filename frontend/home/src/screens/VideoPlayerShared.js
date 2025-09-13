@@ -273,72 +273,140 @@ export default function VideoPlayer({ onBack, src }) {
         catch { }
         // Join socket room for control sync
         try {
-            const { io } = require('socket.io-client');
-            const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-            const s = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io', withCredentials: true });
-            ;
-            window.sharedSocket = s;
-            s.on('connect', () => {
+            if (!window.sharedSocket) {
+                const { io } = require('socket.io-client');
                 const room = sessionStorage.getItem('room') || 'demo';
-                s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
-            });
-            s.on('control', (payload) => {
-                if (payload?.type === 'state') {
-                    if (typeof payload.micMuted === 'boolean')
-                        setMicUiMuted(payload.micMuted);
-                    if (typeof payload.camOn === 'boolean') {
-                        setCamOn(payload.camOn);
-                        setPeerCamOn(payload.camOn); // Track peer's camera state
+                const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
+                const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+                const s = io(SOCKET_BASE || '/', {
+                    transports: ['websocket', 'polling'],
+                    path: '/socket.io',
+                    withCredentials: true,
+                    auth: { room, accessToken }
+                });
+                window.sharedSocket = s;
+                s.on('connect', () => {
+                    console.log('VideoPlayerShared: Socket connected');
+                    s.emit('handshake', {
+                        room,
+                        name: sessionStorage.getItem(`room:${room}:myName`) || undefined,
+                        avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined,
+                        accessToken
+                    });
+                });
+                s.on('error', (err) => {
+                    console.error('VideoPlayerShared: Socket error:', err);
+                    if (err?.error === 'room_full') {
+                        alert('The room is full');
+                        location.hash = '#/';
                     }
-                }
-            });
-            // Receive chat messages into the local drawer list
-            s.on('sync', async (payload) => {
-                try {
-                    if (payload && payload.type === 'playback') {
-                        const v = videoRef.current;
-                        if (!v)
+                    else if (err?.error === 'access_denied') {
+                        alert('Access denied to room');
+                        location.hash = '#/';
+                    }
+                });
+                s.on('control', (payload) => {
+                    if (payload?.type === 'state') {
+                        if (typeof payload.micMuted === 'boolean') {
+                            setMicUiMuted(payload.micMuted);
+                        }
+                        if (typeof payload.camOn === 'boolean') {
+                            setPeerCamOn(payload.camOn); // Track peer's camera state
+                        }
+                    }
+                });
+                // Receive chat messages and other sync events
+                s.on('sync', async (payload) => {
+                    try {
+                        if (payload && payload.type === 'playback') {
+                            const v = videoRef.current;
+                            if (!v)
+                                return;
+                            if (payload.action === 'play') {
+                                try {
+                                    await v.play();
+                                    setPlaying(true);
+                                }
+                                catch { }
+                            }
+                            if (payload.action === 'pause') {
+                                try {
+                                    v.pause();
+                                    setPlaying(false);
+                                }
+                                catch { }
+                            }
+                            if (payload.action === 'seek' && typeof payload.time === 'number') {
+                                v.currentTime = payload.time;
+                            }
+                            if (payload.action === 'stop') {
+                                try {
+                                    v.pause();
+                                    v.removeAttribute('src');
+                                    if (v.srcObject) {
+                                        v.srcObject = null;
+                                    }
+                                    v.load();
+                                    setPlaying(false);
+                                    // Navigate back to SharedRoom  
+                                    setTimeout(() => {
+                                        try {
+                                            location.hash = '#/shared';
+                                        }
+                                        catch {
+                                            window.history.back();
+                                        }
+                                    }, 100);
+                                }
+                                catch { }
+                            }
                             return;
-                        if (payload.action === 'play') {
-                            try {
-                                await v.play();
-                                setPlaying(true);
+                        }
+                        if (payload && payload.type === 'navigation') {
+                            if (payload.action === 'back_to_shared') {
+                                try {
+                                    stopAll();
+                                    setTimeout(() => {
+                                        location.hash = '#/shared';
+                                    }, 100);
+                                }
+                                catch {
+                                    window.history.back();
+                                }
                             }
-                            catch { }
+                            return;
                         }
-                        if (payload.action === 'pause') {
-                            try {
-                                v.pause();
-                                setPlaying(false);
-                            }
-                            catch { }
+                        if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
+                            window.__sharedChat = [
+                                ...(window.__sharedChat || []),
+                                { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
+                            ];
+                            const box = document.getElementById('chatScroll');
+                            if (box)
+                                box.scrollTop = box.scrollHeight;
                         }
-                        if (payload.action === 'seek' && typeof payload.time === 'number') {
-                            v.currentTime = payload.time;
+                        else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
+                            setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
                         }
-                        return;
                     }
-                    if (payload && payload.type === 'chat' && typeof payload.text === 'string') {
-                        window.__sharedChat = [
-                            ...(window.__sharedChat || []),
-                            { id: crypto.randomUUID?.() || Math.random().toString(36), fromSelf: false, text: String(payload.text), ts: Date.now() }
-                        ];
-                        const box = document.getElementById('chatScroll');
-                        if (box)
-                            box.scrollTop = box.scrollHeight;
+                    catch (e) {
+                        console.error('VideoPlayerShared: Error handling sync:', e);
                     }
-                    else if (payload && payload.type === 'vu' && typeof payload.level === 'number') {
-                        setPeerLevel(Math.max(0, Math.min(1, Number(payload.level))));
+                });
+                return () => {
+                    try {
+                        s.disconnect();
+                        if (window.sharedSocket === s) {
+                            window.sharedSocket = null;
+                        }
                     }
-                }
-                catch { }
-            });
-            return () => { try {
-                s.disconnect();
+                    catch { }
+                };
             }
-            catch { } };
         }
-        catch { }
+        catch (e) {
+            console.error('VideoPlayerShared: Error initializing socket:', e);
+        }
         // Check for existing peer video stream (from SharedRoom WebRTC connection)
         const checkPeerStream = () => {
             try {
@@ -463,27 +531,43 @@ export default function VideoPlayer({ onBack, src }) {
     const progressPct = useMemo(() => (progress.dur ? Math.min(100, Math.max(0, (progress.cur / progress.dur) * 100)) : 0), [progress.cur, progress.dur]);
     // Controls
     const togglePlay = async () => {
-        if (!isStreamer)
+        if (!isStreamer) {
+            console.log('Only the streamer can control playback');
             return;
+        }
         const v = videoRef.current;
+        if (!v) {
+            console.error('Video element not available');
+            return;
+        }
         try {
             if (v.paused) {
+                console.log('Starting video playback');
                 try {
                     const nodes = Array.from(document.querySelectorAll('audio, video'));
-                    nodes.forEach(n => { if (n !== v) {
-                        try {
-                            n.pause();
+                    nodes.forEach(n => {
+                        if (n !== v) {
+                            try {
+                                n.pause();
+                            }
+                            catch { }
+                            ;
+                            try {
+                                n.srcObject = null;
+                            }
+                            catch { }
+                            ;
                         }
-                        catch { }
-                        ;
-                        try {
-                            n.srcObject = null;
-                        }
-                        catch { }
-                        ;
-                    } });
+                    });
                 }
                 catch { }
+                // For WebRTC streams, ensure srcObject is set
+                if (!v.src && !v.srcObject) {
+                    const peerStream = window.__peerStream;
+                    if (peerStream) {
+                        v.srcObject = peerStream;
+                    }
+                }
                 await v.play();
                 setPlaying(true);
                 try {
@@ -492,6 +576,7 @@ export default function VideoPlayer({ onBack, src }) {
                 catch { }
             }
             else {
+                console.log('Pausing video playback');
                 v.pause();
                 setPlaying(false);
                 try {
@@ -500,16 +585,37 @@ export default function VideoPlayer({ onBack, src }) {
                 catch { }
             }
         }
-        catch { }
+        catch (e) {
+            console.error('Error toggling video playback:', e);
+        }
     };
-    const handleSeek = (t) => { if (!isStreamer)
-        return; const v = videoRef.current; if (!v)
-        return; const nt = Math.max(0, Math.min(v.duration || t, t)); v.currentTime = nt; try {
-        window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt });
-    }
-    catch { } };
-    const handleSkip = (d) => { const v = videoRef.current; if (!v)
-        return; handleSeek((v.currentTime || 0) + d); };
+    const handleSeek = (t) => {
+        if (!isStreamer) {
+            console.log('Only the streamer can control playback');
+            return;
+        }
+        const v = videoRef.current;
+        if (!v) {
+            console.error('Video element not available for seeking');
+            return;
+        }
+        const nt = Math.max(0, Math.min(v.duration || t, t));
+        v.currentTime = nt;
+        try {
+            window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt });
+        }
+        catch (e) {
+            console.error('Error seeking video:', e);
+        }
+    };
+    const handleSkip = (d) => {
+        if (!isStreamer)
+            return;
+        const v = videoRef.current;
+        if (!v)
+            return;
+        handleSeek((v.currentTime || 0) + d);
+    };
     const enterFS = async () => { const el = videoRef.current; try {
         await el?.requestFullscreen?.();
         setIsFS(true);
@@ -529,16 +635,32 @@ export default function VideoPlayer({ onBack, src }) {
             if (v) {
                 v.pause();
                 v.removeAttribute('src');
+                if (v.srcObject) {
+                    v.srcObject = null;
+                }
                 v.load();
             }
             if (d) {
                 d.pause();
                 d.removeAttribute('src');
+                if (d.srcObject) {
+                    d.srcObject = null;
+                }
                 d.load();
             }
             setPlaying(false);
+            // Notify peers that streaming has stopped
+            try {
+                window.sharedSocket?.emit('sync', { type: 'playback', action: 'stop' });
+            }
+            catch { }
+            // Clear shared media state
+            sessionStorage.removeItem('shared:media');
+            sessionStorage.removeItem('shared:mode');
         }
-        catch { }
+        catch (e) {
+            console.error('Error stopping video:', e);
+        }
     };
     // Subtitle toggling and track switching
     const refreshTracksState = () => {
@@ -589,18 +711,80 @@ export default function VideoPlayer({ onBack, src }) {
         tracks.forEach((t) => t.enabled = (t.language === lang) || (!lang && t === tracks[0]));
         setSelectedAudio(lang || '');
     };
-    // Load provided src (object URL or remote) if passed
+    // Load provided src (object URL, remote, or WebRTC stream) if passed
     useEffect(() => {
-        if (src) {
+        // Handle session storage for shared media first
+        let actualSrc = src;
+        try {
+            const j = sessionStorage.getItem('shared:media');
+            if (j) {
+                const m = JSON.parse(j);
+                if (m && m.kind === 'video' && m.url) {
+                    actualSrc = m.url;
+                }
+            }
+        }
+        catch { }
+        if (actualSrc) {
             const v = videoRef.current;
             const d = decoyRef.current;
-            if (v) {
-                v.src = src;
-                v.load();
+            // Check if this is a WebRTC peer stream
+            if (actualSrc === 'webrtc-peer-stream') {
+                // Use retry logic for WebRTC peer stream
+                let retries = 0;
+                const maxRetries = 15; // Increased retries for better reliability
+                const connectPeerStream = () => {
+                    const peerStream = window.__peerStream;
+                    if (peerStream && v) {
+                        try {
+                            v.srcObject = peerStream;
+                            v.load();
+                            // Also set up decoy for ambient effects if present
+                            if (d) {
+                                d.srcObject = peerStream;
+                                d.load();
+                            }
+                            console.log('WebRTC peer stream connected successfully');
+                            return true;
+                        }
+                        catch (e) {
+                            console.error('Error connecting peer stream:', e);
+                            return false;
+                        }
+                    }
+                    return false;
+                };
+                // Try immediately first
+                if (!connectPeerStream()) {
+                    // If not available immediately, set up retry mechanism
+                    console.log('WebRTC peer stream not immediately available, retrying...');
+                    const retryInterval = setInterval(() => {
+                        retries++;
+                        if (connectPeerStream()) {
+                            clearInterval(retryInterval);
+                            console.log(`WebRTC peer stream connected after ${retries} retries`);
+                        }
+                        else if (retries >= maxRetries) {
+                            clearInterval(retryInterval);
+                            console.warn('WebRTC peer stream not available after maximum retries');
+                            // Set error state
+                            console.error('Unable to connect to peer stream. Please check your connection and try again.');
+                        }
+                    }, 400);
+                    // Return cleanup function
+                    return () => clearInterval(retryInterval);
+                }
             }
-            if (d) {
-                d.src = src;
-                d.load();
+            else {
+                // Normal file URL case
+                if (v) {
+                    v.src = actualSrc;
+                    v.load();
+                }
+                if (d) {
+                    d.src = actualSrc;
+                    d.load();
+                }
             }
         }
     }, [src]);
@@ -638,10 +822,14 @@ export default function VideoPlayer({ onBack, src }) {
             }
         };
         const onPlay = () => {
-            try {
-                window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+            setPlaying(true);
+            // Only streamers emit sync events  
+            if (isStreamer) {
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'play' });
+                }
+                catch { }
             }
-            catch { }
             if (!decoy)
                 return;
             try {
@@ -658,18 +846,28 @@ export default function VideoPlayer({ onBack, src }) {
             }
             catch { }
         };
-        const onPause = () => { try {
-            window.sharedSocket?.emit('sync', { type: 'playback', action: 'pause' });
-        }
-        catch { } ; try {
-            decoy?.pause();
-        }
-        catch { } };
-        const onSeeked = () => {
+        const onPause = () => {
+            setPlaying(false);
+            // Only streamers emit sync events
+            if (isStreamer) {
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'pause' });
+                }
+                catch { }
+            }
             try {
-                window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime });
+                decoy?.pause();
             }
             catch { }
+        };
+        const onSeeked = () => {
+            // Only streamers emit sync events
+            if (isStreamer) {
+                try {
+                    window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: v.currentTime });
+                }
+                catch { }
+            }
             if (!decoy)
                 return;
             try {
@@ -724,24 +922,32 @@ export default function VideoPlayer({ onBack, src }) {
         };
     }, [subsEnabled]);
     const TransportIcon = playing ? Icon.Pause : Icon.Play;
-    return (_jsxs("div", { className: "relative min-h-screen text-white font-montserrat overflow-hidden", children: [_jsx("video", { ref: decoyRef, className: "pointer-events-none fixed inset-0 w-full h-full object-cover filter blur-[50px] scale-[2_1.5] opacity-60 z-0", muted: true, playsInline: true, preload: "auto", "aria-hidden": "true" }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between", children: [_jsx("button", { onClick: () => { try {
-                            stopAll();
-                            location.hash = '#/shared';
-                        }
-                        catch {
+    return (_jsxs("div", { className: "relative min-h-screen text-white font-montserrat overflow-hidden", children: [_jsx("video", { ref: decoyRef, className: "pointer-events-none fixed inset-0 w-full h-full object-cover filter blur-[50px] scale-[2_1.5] opacity-60 z-0", muted: true, playsInline: true, preload: "auto", "aria-hidden": "true" }), _jsxs("div", { className: "absolute top-4 left-4 right-4 z-[1002] flex items-center justify-between", children: [_jsx("button", { onClick: () => {
                             try {
                                 stopAll();
+                                // Notify other peers to also go back
+                                window.sharedSocket?.emit('sync', { type: 'navigation', action: 'back_to_shared' });
+                                setTimeout(() => {
+                                    location.hash = '#/shared';
+                                }, 100);
                             }
-                            catch { }
-                            ;
-                            (onBack ? onBack() : window.history.back());
-                        } }, className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", "aria-label": "Back", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: !showDrawer && (_jsx("button", { onClick: () => setShowDrawer(true), "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) })) })] }), _jsxs("main", { className: "relative z-10 min-h-screen w-full p-0", children: [_jsx("div", { className: "absolute inset-0", children: _jsx("div", { className: "absolute inset-0 flex items-center justify-center px-4 pt-6 pb-28", children: _jsx("div", { className: "relative inline-flex rounded-2xl overflow-hidden shadow-2xl max-w-[92vw]", style: { width: box.w || undefined, height: box.h || undefined, boxShadow: `0 0 40px ${bgColor.replace('rgb', 'rgba').replace(')', ', 0.35)')}` }, children: _jsx("video", { ref: videoRef, controls: false, className: `relative z-10 block w-full h-full ${aspect > 1.72 && aspect < 1.82 ? 'object-cover' : 'object-contain'} bg-black`, playsInline: true, preload: "metadata", onPlay: async () => { try {
+                            catch {
+                                try {
+                                    stopAll();
+                                }
+                                catch { }
+                                ;
+                                (onBack ? onBack() : window.history.back());
+                            }
+                        }, className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", "aria-label": "Back", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx("div", { className: `px-3 py-1 rounded-full text-xs font-medium border ${isStreamer
+                                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                                    : 'bg-blue-500/20 border-blue-400/40 text-blue-300'}`, children: isStreamer ? '🎬 Streamer' : '👁️ Viewer' }), !showDrawer && (_jsx("button", { onClick: () => setShowDrawer(true), "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) }))] })] }), _jsxs("main", { className: "relative z-10 min-h-screen w-full p-0", children: [_jsx("div", { className: "absolute inset-0", children: _jsx("div", { className: "absolute inset-0 flex items-center justify-center px-4 pt-6 pb-28", children: _jsx("div", { className: "relative inline-flex rounded-2xl overflow-hidden shadow-2xl max-w-[92vw]", style: { width: box.w || undefined, height: box.h || undefined, boxShadow: `0 0 40px ${bgColor.replace('rgb', 'rgba').replace(')', ', 0.35)')}` }, children: _jsx("video", { ref: videoRef, controls: false, className: `relative z-10 block w-full h-full ${aspect > 1.72 && aspect < 1.82 ? 'object-cover' : 'object-contain'} bg-black`, playsInline: true, preload: "metadata", onPlay: async () => { try {
                                         const ctx = audioCtxRef.current;
                                         if (ctx && ctx.state !== 'running') {
                                             await ctx.resume();
                                         }
                                     }
-                                    catch { } } }) }) }) }), _jsx("div", { className: "absolute bottom-4 left-0 right-0 z-20 px-4", children: _jsxs("div", { className: "w-full max-w-[92vw] mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/40 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", style: { zIndex: 1002 }, children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Back 5s", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: togglePlay, className: "h-12 w-12 rounded-full bg-cyan-400/30 border border-white/30 flex items-center justify-center hover:scale-110 transition", children: _jsx(TransportIcon, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), className: "h-10 w-10 rounded-full bg-white/10 border border-white/20 flex items-center justify-center hover:scale-105 transition", title: "Forward 5s", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsx("div", { className: "flex items-center gap-3 flex-1", children: _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(59,130,246,0.95), rgba(29,78,216,0.95))', boxShadow: '0 0 18px rgba(59,130,246,0.45), 0 0 18px rgba(29,78,216,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Seek" })] }) }), _jsxs("div", { className: "flex items-center gap-3", children: [_jsx("button", { onClick: toggleFS, className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center", title: "Fullscreen", "aria-label": "Fullscreen", children: _jsx(Icon.Expand, { className: "w-4 h-4" }) }), _jsx("button", { onClick: toggleSubtitles, className: `h-9 w-9 rounded border flex items-center justify-center ${subsEnabled ? 'bg-white/20 border-white/30' : 'bg-white/10 border-white/20'}`, title: "Subtitles", "aria-label": "Subtitles", children: _jsx(Icon.CC, { className: "w-4 h-4" }) }), availableSubs.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowSubMenu((v) => !v); setShowAudioMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Subtitle Language", "aria-label": "Subtitle Language", children: _jsx(Icon.Globe, { className: "w-4 h-4" }) }), showSubMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableSubs.map(s => (_jsx("button", { onClick: () => { setSubTrack(s.srclang); setShowSubMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedSub === s.srclang ? 'bg-white/20' : 'hover:bg-white/10'}`, children: s.label }, s.srclang))) }))] })), availableAudio.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowAudioMenu((v) => !v); setShowSubMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Audio Language", "aria-label": "Audio Language", children: _jsx(Icon.Audio, { className: "w-4 h-4" }) }), showAudioMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableAudio.map((a, i) => (_jsx("button", { onClick: () => { setAudioTrack(a.lang); setShowAudioMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedAudio === (a.lang || '') ? 'bg-white/20' : 'hover:bg-white/10'}`, children: a.label }, (a.lang || '') + i))) }))] })), _jsxs("div", { className: "flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const el = videoRef.current; if (!el)
+                                    catch { } } }) }) }) }), _jsx("div", { className: "absolute bottom-4 left-0 right-0 z-20 px-4", children: _jsxs("div", { className: "w-full max-w-[92vw] mx-auto flex items-center gap-4 px-3 py-3 rounded-2xl bg-black/40 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", style: { zIndex: 1002 }, children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), disabled: !isStreamer, className: `h-10 w-10 rounded-full border flex items-center justify-center transition ${isStreamer ? 'bg-white/10 border-white/20 hover:scale-105 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? "Back 5s" : "Only streamer can control playback", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: togglePlay, disabled: !isStreamer, className: `h-12 w-12 rounded-full border flex items-center justify-center transition ${isStreamer ? 'bg-cyan-400/30 border-white/30 hover:scale-110 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? (playing ? "Pause" : "Play") : "Only streamer can control playback", children: _jsx(TransportIcon, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), disabled: !isStreamer, className: `h-10 w-10 rounded-full border flex items-center justify-center transition ${isStreamer ? 'bg-white/10 border-white/20 hover:scale-105 text-white' : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? "Forward 5s" : "Only streamer can control playback", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsx("div", { className: "flex items-center gap-3 flex-1", children: _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(59,130,246,0.95), rgba(29,78,216,0.95))', boxShadow: '0 0 18px rgba(59,130,246,0.45), 0 0 18px rgba(29,78,216,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), disabled: !isStreamer, className: `absolute inset-0 w-full appearance-none bg-transparent h-6 ${isStreamer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`, "aria-label": "Seek", title: isStreamer ? "Seek video" : "Only streamer can control playback" })] }) }), _jsxs("div", { className: "flex items-center gap-3", children: [_jsx("button", { onClick: toggleFS, className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center", title: "Fullscreen", "aria-label": "Fullscreen", children: _jsx(Icon.Expand, { className: "w-4 h-4" }) }), _jsx("button", { onClick: toggleSubtitles, className: `h-9 w-9 rounded border flex items-center justify-center ${subsEnabled ? 'bg-white/20 border-white/30' : 'bg-white/10 border-white/20'}`, title: "Subtitles", "aria-label": "Subtitles", children: _jsx(Icon.CC, { className: "w-4 h-4" }) }), availableSubs.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowSubMenu((v) => !v); setShowAudioMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Subtitle Language", "aria-label": "Subtitle Language", children: _jsx(Icon.Globe, { className: "w-4 h-4" }) }), showSubMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableSubs.map(s => (_jsx("button", { onClick: () => { setSubTrack(s.srclang); setShowSubMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedSub === s.srclang ? 'bg-white/20' : 'hover:bg-white/10'}`, children: s.label }, s.srclang))) }))] })), availableAudio.length > 0 && (_jsxs("div", { className: "relative", children: [_jsx("button", { onClick: () => { setShowAudioMenu((v) => !v); setShowSubMenu(false); }, className: "h-9 w-9 rounded bg-white/10 border border-white/20 flex items-center justify-center", title: "Audio Language", "aria-label": "Audio Language", children: _jsx(Icon.Audio, { className: "w-4 h-4" }) }), showAudioMenu && (_jsx("div", { className: "absolute right-0 mt-2 w-36 rounded bg-black/80 border border-white/15 shadow-lg backdrop-blur-md p-1 z-50", children: availableAudio.map((a, i) => (_jsx("button", { onClick: () => { setAudioTrack(a.lang); setShowAudioMenu(false); }, className: `w-full text-left px-3 py-1 rounded text-sm ${selectedAudio === (a.lang || '') ? 'bg-white/20' : 'hover:bg-white/10'}`, children: a.label }, (a.lang || '') + i))) }))] })), _jsxs("div", { className: "flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const el = videoRef.current; if (!el)
                                                         return; el.muted = !el.muted; setMuted(el.muted); }, className: "h-8 w-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center", "aria-label": "Mute", children: muted ? _jsx(Icon.Mute, { className: "w-5 h-5" }) : _jsx(Icon.Volume, { className: "w-5 h-5" }) }), _jsx("input", { type: "range", min: 0, max: 1, step: 0.01, value: volume, onChange: (e) => { const v = Number(e.target.value); setVolume(v); const el = videoRef.current; if (el)
                                                         el.volume = v; }, className: "w-24", "aria-label": "Volume" })] })] })] }) }), showDrawer && createPortal(_jsxs("div", { className: "fixed inset-0 z-[1001]", children: [_jsx("div", { className: "absolute inset-0 bg-black/50", onClick: () => setShowDrawer(false) }), _jsxs("div", { className: "absolute top-0 right-0 h-full w-[80%] max-w-[380px] bg-black/70 backdrop-blur-md border-l border-white/15 shadow-xl", children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 border-b border-white/10", children: [_jsx("div", { className: "text-white/90 font-medium", children: "Call" }), _jsx("button", { onClick: () => setShowDrawer(false), className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition", "aria-label": "Close", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-4 h-4", children: _jsx("path", { d: "M6 6l12 12M18 6L6 18", stroke: "currentColor", strokeWidth: "2" }) }) })] }), _jsxs("div", { className: "flex flex-col h-[calc(100%-52px)]", children: [_jsx("div", { className: "flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2", children: _jsxs("div", { className: "grid grid-cols-1 lg:grid-cols-2 gap-3", children: [_jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-full max-w-[300px] lg:max-w-[400px] h-[150px] lg:h-[200px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }, children: camOn ? (_jsx("video", { ref: myVideoRef, autoPlay: true, muted: true, playsInline: true, className: "w-full h-full object-cover", children: _jsx("track", { kind: "captions" }) })) : (myAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: myAvatar, alt: "me" }) : _jsx("span", { className: "text-4xl", children: "\uD83E\uDDD1" })) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate", children: myName })] }), _jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-full max-w-[300px] lg:max-w-[400px] h-[150px] lg:h-[200px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }, children: peerStreamAvailable && peerCamOn ? (_jsx("video", { ref: peerVideoRef, autoPlay: true, muted: true, playsInline: true, className: "w-full h-full object-cover", children: _jsx("track", { kind: "captions" }) })) : (peerAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: peerAvatar, alt: "peer" }) : _jsx("span", { className: "text-4xl", children: "\uD83D\uDC64" })) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate", children: peerName })] }), _jsxs("div", { className: "mt-2 flex items-center justify-center gap-3", children: [_jsx("button", { onClick: toggleCam, title: "Open Video", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, title: "Open Audio", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) })] })] }) }), _jsxs("div", { className: "h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col", children: [_jsx("div", { id: "chatScroll", className: "flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10", children: window.__sharedChat?.length ? window.__sharedChat.map((m) => (_jsx("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: _jsxs("div", { className: `max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm", children: m.text }), _jsx("div", { className: "mt-0.5 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }) }, m.id))) : (_jsx("div", { className: "text-xs text-white/60 text-center py-4", children: "No messages yet. Say hello!" })) }), _jsxs("form", { onSubmit: (e) => {
                                                             e.preventDefault();

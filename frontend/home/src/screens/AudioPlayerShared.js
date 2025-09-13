@@ -407,7 +407,13 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                 const m = JSON.parse(j);
                 if (!m || m.kind !== 'audio' || !m.url)
                     return false;
-                setCurrentTrack({ name: m.name || 'Audio', url: m.url, cover: FALLBACK_COVER });
+                // Handle WebRTC peer stream case
+                if (m.url === 'webrtc-peer-stream' && m.isRemoteStream) {
+                    setCurrentTrack({ name: m.name || 'Shared Audio', url: 'webrtc-peer-stream', cover: FALLBACK_COVER });
+                }
+                else {
+                    setCurrentTrack({ name: m.name || 'Audio', url: m.url, cover: FALLBACK_COVER });
+                }
                 return true;
             }
             catch {
@@ -445,10 +451,22 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         const a = audioRef.current;
         if (!a)
             return;
-        // Set the audio src explicitly to ensure updates
-        a.pause();
-        a.src = currentTrack.url || '';
-        a.load();
+        // Handle WebRTC stream case vs normal file case
+        if (currentTrack.url === 'webrtc-peer-stream') {
+            // Use the WebRTC peer stream instead of a file URL
+            const peerStream = window.__peerStream;
+            if (peerStream) {
+                a.pause();
+                a.srcObject = peerStream;
+                a.load();
+            }
+        }
+        else {
+            // Normal file URL case
+            a.pause();
+            a.src = currentTrack.url || '';
+            a.load();
+        }
         const start = async () => {
             try {
                 await ensureAudioReady();
@@ -640,17 +658,27 @@ export default function AudioPlayerShared({ onBack, src, name }) {
     }, [loop]);
     const handlePlayPause = async () => {
         // Only streamer controls playback; listener ignores clicks
-        if (!isStreamer)
+        if (!isStreamer) {
+            console.log('Only the streamer can control playback');
             return;
+        }
         try {
             await ensureAudioReady();
             const a = audioRef.current;
+            if (!a) {
+                console.error('Audio element not available');
+                return;
+            }
             if (a.paused) {
+                console.log('Starting audio playback');
                 try {
-                    Array.from(document.querySelectorAll('video')).forEach(v => { try {
-                        v.pause();
-                    }
-                    catch { } ; });
+                    Array.from(document.querySelectorAll('video')).forEach(v => {
+                        try {
+                            v.pause();
+                        }
+                        catch { }
+                        ;
+                    });
                 }
                 catch { }
                 await a.play();
@@ -661,6 +689,7 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                 catch { }
             }
             else {
+                console.log('Pausing audio playback');
                 a.pause();
                 setPlaying(false);
                 try {
@@ -670,21 +699,28 @@ export default function AudioPlayerShared({ onBack, src, name }) {
             }
         }
         catch (e) {
+            console.error('Error in handlePlayPause:', e);
             setError(e?.message || 'Playback failed');
         }
     };
     const handleSeek = (t) => {
-        if (!isStreamer)
+        if (!isStreamer) {
+            console.log('Only the streamer can control playback');
             return;
+        }
         const a = audioRef.current;
-        if (!a)
+        if (!a) {
+            console.error('Audio element not available for seeking');
             return;
+        }
         const nt = Math.max(0, Math.min(a.duration || t, t));
         a.currentTime = nt;
         try {
             window.sharedSocket?.emit('sync', { type: 'playback', action: 'seek', time: nt });
         }
-        catch { }
+        catch (e) {
+            console.error('Error seeking audio:', e);
+        }
     };
     const handleSkip = (delta) => {
         if (!isStreamer)
@@ -715,13 +751,35 @@ export default function AudioPlayerShared({ onBack, src, name }) {
         try {
             if (!window.sharedSocket) {
                 const { io } = require('socket.io-client');
+                const room = sessionStorage.getItem('room') || 'demo';
+                const accessToken = sessionStorage.getItem(`room:${room}:access`) || '';
                 const SOCKET_BASE = import.meta.env?.VITE_SOCKET_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-                const s = io(SOCKET_BASE || '/', { transports: ['websocket', 'polling'], path: '/socket.io' });
-                ;
+                const s = io(SOCKET_BASE || '/', {
+                    transports: ['websocket', 'polling'],
+                    path: '/socket.io',
+                    withCredentials: true,
+                    auth: { room, accessToken }
+                });
                 window.sharedSocket = s;
                 s.on('connect', () => {
-                    const room = sessionStorage.getItem('room') || 'demo';
-                    s.emit('handshake', { room, name: sessionStorage.getItem(`room:${room}:myName`) || undefined, avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined });
+                    console.log('AudioPlayerShared: Socket connected');
+                    s.emit('handshake', {
+                        room,
+                        name: sessionStorage.getItem(`room:${room}:myName`) || undefined,
+                        avatar: sessionStorage.getItem(`room:${room}:myAvatar`) || undefined,
+                        accessToken
+                    });
+                });
+                s.on('error', (err) => {
+                    console.error('AudioPlayerShared: Socket error:', err);
+                    if (err?.error === 'room_full') {
+                        alert('The room is full');
+                        location.hash = '#/';
+                    }
+                    else if (err?.error === 'access_denied') {
+                        alert('Access denied to room');
+                        location.hash = '#/';
+                    }
                 });
                 s.on('control', (payload) => {
                     if (payload?.type === 'state') {
@@ -764,7 +822,7 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                                     // Navigate back to SharedRoom
                                     setTimeout(() => {
                                         try {
-                                            window.location.hash = '#/shared-room';
+                                            window.location.hash = '#/shared';
                                         }
                                         catch {
                                             window.history.back();
@@ -772,6 +830,27 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                                     }, 100);
                                 }
                                 catch { }
+                            }
+                            return;
+                        }
+                        // Handle navigation events
+                        if (payload && payload.type === 'navigation') {
+                            if (payload.action === 'back_to_shared') {
+                                try {
+                                    const a = audioRef.current;
+                                    if (a) {
+                                        a.pause();
+                                        a.removeAttribute('src');
+                                        a.load();
+                                    }
+                                    setPlaying(false);
+                                    setTimeout(() => {
+                                        location.hash = '#/shared';
+                                    }, 100);
+                                }
+                                catch {
+                                    window.history.back();
+                                }
                             }
                             return;
                         }
@@ -875,8 +954,9 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                                     a.removeAttribute('src');
                                     a.load();
                                 }
-                                // Notify peer to stop audio
+                                // Notify peers to also go back and stop audio
                                 window.sharedSocket?.emit('sync', { type: 'playback', action: 'stop' });
+                                window.sharedSocket?.emit('sync', { type: 'navigation', action: 'back_to_shared' });
                                 // Clear shared media state
                                 sessionStorage.removeItem('shared:media');
                                 sessionStorage.removeItem('shared:mode');
@@ -884,18 +964,28 @@ export default function AudioPlayerShared({ onBack, src, name }) {
                             catch { }
                             ;
                             // Navigate back
-                            if (onBack) {
-                                onBack();
-                            }
-                            else {
-                                try {
-                                    window.location.hash = '#/shared-room';
+                            setTimeout(() => {
+                                if (onBack) {
+                                    onBack();
                                 }
-                                catch {
-                                    window.history.back();
+                                else {
+                                    try {
+                                        window.location.hash = '#/shared';
+                                    }
+                                    catch {
+                                        window.history.back();
+                                    }
                                 }
-                            }
-                        }, "aria-label": "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsx("div", { className: "flex items-center gap-2", children: _jsx("button", { onClick: () => { setShowDrawer(true); }, "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) }) })] }), _jsx("div", { className: "absolute top-16 left-0 right-0 z-10 text-center px-6", children: _jsx("div", { className: "inline-block px-4 py-1 text-sm md:text-base text-white/90 backdrop-blur-sm bg-black/20 rounded-full border border-white/10", children: title }) }), _jsx("div", { className: "absolute bottom-2 sm:bottom-4 left-0 right-0 z-20 px-2 sm:px-4", children: _jsxs("div", { className: "w-full max-w-6xl mx-auto flex items-center gap-2 sm:gap-4 px-2 sm:px-3 py-2 sm:py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Back 5s", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: handlePlayPause, className: "h-12 w-12 rounded-full bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border border-white/30 flex items-center justify-center hover:scale-110 transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm", children: playing ? _jsx(Icon.Pause, { className: "w-7 h-7" }) : _jsx(Icon.Play, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), className: "h-10 w-10 rounded-full bg-gradient-to-br from-white/15 to-white/5 border border-white/20 flex items-center justify-center hover:scale-105 hover:from-white/25 hover:to-white/10 transition", title: "Forward 5s", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsxs("div", { className: "flex-1 flex items-center gap-3 min-w-[200px]", children: [_jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90", children: formatTime(progress.cur) }), _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95) 0%, rgba(59,130,246,0.95) 50%, rgba(16,185,129,0.95) 100%)', boxShadow: '0 0 14px rgba(56,189,248,0.45), 0 0 18px rgba(59,130,246,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Seek" })] }), _jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90 text-right", children: formatTime(progress.dur) })] }), _jsxs("div", { className: "flex items-center gap-1 sm:gap-3", children: [_jsx("button", { onClick: () => setLoop(v => !v), className: `h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Loop", children: _jsx(Icon.Loop, { className: "w-4 h-4 sm:w-5 sm:h-5" }) }), _jsx("button", { onClick: () => setShuffle(v => !v), className: `h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Shuffle", children: _jsx(Icon.Shuffle, { className: "w-4 h-4 sm:w-5 sm:h-5" }) }), _jsxs("div", { className: "hidden sm:flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const a = audioRef.current; if (!a)
+                            }, 100);
+                        }, "aria-label": "Back", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx(Icon.Back, { className: "w-5 h-5" }) }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx("div", { className: `px-3 py-1 rounded-full text-xs font-medium border ${isStreamer
+                                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300'
+                                    : 'bg-blue-500/20 border-blue-400/40 text-blue-300'}`, children: isStreamer ? '🎵 Streamer' : '👂 Listener' }), _jsx("button", { onClick: () => { setShowDrawer(true); }, "aria-label": "Call Controls", title: "Call Controls", className: "h-10 w-10 rounded-full bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center hover:scale-110 transition", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-5 h-5", children: _jsx("path", { d: "M5 12a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0zm5 0a2 2 0 114 0 2 2 0 01-4 0z" }) }) })] })] }), _jsx("div", { className: "absolute top-16 left-0 right-0 z-10 text-center px-6", children: _jsx("div", { className: "inline-block px-4 py-1 text-sm md:text-base text-white/90 backdrop-blur-sm bg-black/20 rounded-full border border-white/10", children: title }) }), _jsx("div", { className: "absolute bottom-2 sm:bottom-4 left-0 right-0 z-20 px-2 sm:px-4", children: _jsxs("div", { className: "w-full max-w-6xl mx-auto flex items-center gap-2 sm:gap-4 px-2 sm:px-3 py-2 sm:py-3 rounded-2xl bg-black/30 backdrop-blur-md border border-white/15 shadow-[0_10px_30px_rgba(0,0,0,0.35)]", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: () => handleSkip(-5), disabled: !isStreamer, className: `h-10 w-10 rounded-full border flex items-center justify-center transition ${isStreamer
+                                        ? 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:scale-105 hover:from-white/25 hover:to-white/10 text-white'
+                                        : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? "Back 5s" : "Only streamer can control playback", children: _jsx(Icon.SkipBack, { className: "w-5 h-5" }) }), _jsx("button", { onClick: handlePlayPause, disabled: !isStreamer, className: `h-12 w-12 rounded-full border flex items-center justify-center transition shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-sm ${isStreamer
+                                        ? 'bg-gradient-to-br from-cyan-400/30 to-emerald-400/20 border-white/30 hover:scale-110 text-white'
+                                        : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? (playing ? "Pause" : "Play") : "Only streamer can control playback", children: playing ? _jsx(Icon.Pause, { className: "w-7 h-7" }) : _jsx(Icon.Play, { className: "w-7 h-7" }) }), _jsx("button", { onClick: () => handleSkip(5), disabled: !isStreamer, className: `h-10 w-10 rounded-full border flex items-center justify-center transition ${isStreamer
+                                        ? 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:scale-105 hover:from-white/25 hover:to-white/10 text-white'
+                                        : 'bg-white/5 border-white/10 text-white/40 cursor-not-allowed'}`, title: isStreamer ? "Forward 5s" : "Only streamer can control playback", children: _jsx(Icon.SkipFwd, { className: "w-5 h-5" }) })] }), _jsxs("div", { className: "flex-1 flex items-center gap-3 min-w-[200px]", children: [_jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90", children: formatTime(progress.cur) }), _jsxs("div", { className: "relative w-full h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${progressPct}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95) 0%, rgba(59,130,246,0.95) 50%, rgba(16,185,129,0.95) 100%)', boxShadow: '0 0 14px rgba(56,189,248,0.45), 0 0 18px rgba(59,130,246,0.35)' } }), _jsx("input", { type: "range", min: 0, max: progress.dur || 0, step: 0.01, value: progress.cur, onChange: (e) => handleSeek(Number(e.target.value)), disabled: !isStreamer, className: `absolute inset-0 w-full appearance-none bg-transparent h-6 ${isStreamer ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`, "aria-label": "Seek", title: isStreamer ? "Seek audio" : "Only streamer can control playback" })] }), _jsx("span", { className: "text-[11px] tabular-nums w-14 text-white/90 text-right", children: formatTime(progress.dur) })] }), _jsxs("div", { className: "flex items-center gap-1 sm:gap-3", children: [_jsx("button", { onClick: () => setLoop(v => !v), className: `h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${loop ? 'bg-emerald-500/30 border-emerald-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Loop", children: _jsx(Icon.Loop, { className: "w-4 h-4 sm:w-5 sm:h-5" }) }), _jsx("button", { onClick: () => setShuffle(v => !v), className: `h-8 w-8 sm:h-9 sm:w-9 rounded-full border flex items-center justify-center transition ${shuffle ? 'bg-cyan-500/30 border-cyan-400/50' : 'bg-gradient-to-br from-white/15 to-white/5 border-white/20 hover:from-white/25 hover:to-white/10'}`, title: "Shuffle", children: _jsx(Icon.Shuffle, { className: "w-4 h-4 sm:w-5 sm:h-5" }) }), _jsxs("div", { className: "hidden sm:flex items-center gap-2 px-2 py-1 rounded-full bg-white/5 border border-white/20", children: [_jsx("button", { onClick: () => { const a = audioRef.current; if (!a)
                                                 return; a.muted = !a.muted; setMuted(a.muted); }, className: `h-9 w-9 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`, title: "Mute", children: muted ? _jsx(Icon.Mute, { className: "w-5 h-5" }) : _jsx(Icon.Volume, { className: "w-5 h-5" }) }), _jsxs("div", { className: "relative w-[160px] h-6", children: [_jsx("div", { className: "absolute inset-y-0 left-0 right-0 my-[10px] rounded-full bg-white/10" }), _jsx("div", { className: "absolute inset-y-0 left-0 my-[10px] rounded-full", style: { width: `${volume * 100}%`, background: 'linear-gradient(90deg, rgba(56,189,248,0.95), rgba(59,130,246,0.95))', boxShadow: '0 0 12px rgba(56,189,248,0.45)' } }), _jsx("input", { type: "range", min: 0, max: 1, step: 0.01, value: volume, onChange: (e) => { const v = Number(e.target.value); setVolume(v); const a = audioRef.current; if (a)
                                                         a.volume = v; }, className: "absolute inset-0 w-full appearance-none bg-transparent h-6", "aria-label": "Volume" })] })] }), _jsx("button", { onClick: () => { const a = audioRef.current; if (!a)
                                         return; a.muted = !a.muted; setMuted(a.muted); }, className: `sm:hidden h-8 w-8 rounded-full border flex items-center justify-center transition ${muted ? 'bg-red-500/30 border-red-400/50' : 'bg-white/10 border-white/20'}`, title: "Mute", children: muted ? _jsx(Icon.Mute, { className: "w-4 h-4" }) : _jsx(Icon.Volume, { className: "w-4 h-4" }) })] })] }) }), _jsx("audio", { ref: audioRef, src: currentTrack?.url, preload: "metadata" }), _jsxs("div", { className: `fixed top-0 right-0 h-full w-[90%] sm:w-[80%] max-w-[380px] z-30 bg-black/70 backdrop-blur-md border-l border-white/15 transform transition-transform duration-300 ${showDrawer ? 'translate-x-0' : 'translate-x-full'}`, children: [_jsxs("div", { className: "flex items-center justify-between px-4 py-3 border-b border-white/10", children: [_jsx("div", { className: "text-white/90 font-medium", children: "Call" }), _jsx("button", { onClick: () => setShowDrawer(false), className: "h-9 w-9 rounded bg-white/10 border border-white/20 text-white/90 flex items-center justify-center hover:scale-105 transition", "aria-label": "Close", children: _jsx("svg", { viewBox: "0 0 24 24", fill: "currentColor", className: "w-4 h-4", children: _jsx("path", { d: "M6 6l12 12M18 6L6 18", stroke: "currentColor", strokeWidth: "2" }) }) })] }), _jsxs("div", { className: "flex flex-col h-[calc(100%-52px)]", children: [_jsx("div", { className: "flex-1 overflow-y-auto px-2 pt-2 pb-1 space-y-2", children: _jsxs("div", { className: "grid grid-cols-1 gap-3", children: [_jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-full max-w-[280px] h-[120px] sm:h-[150px] rounded-md bg-cyan-400/40 border border-cyan-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: meActive ? `0 0 ${Math.max(28, Math.min(110, 28 + myLevel * 160))}px rgba(59,130,246,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + myLevel * 200))}px rgba(16,185,129,0.55)` : '0 0 28px rgba(59,130,246,0.35), 0 0 36px rgba(16,185,129,0.25)' }, children: camOn ? (_jsx("video", { ref: myVideoRef, autoPlay: true, muted: true, playsInline: true, className: "w-full h-full object-cover", children: _jsx("track", { kind: "captions" }) })) : (myAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: myAvatar, alt: "me" }) : _jsx("span", { className: "text-3xl", children: "\uD83E\uDDD1" })) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate max-w-full", children: myName })] }), _jsxs("div", { className: "relative w-full flex flex-col items-center", children: [_jsx("div", { className: "w-full max-w-[280px] h-[120px] sm:h-[150px] rounded-md bg-pink-400/40 border border-pink-300/40 overflow-hidden flex items-center justify-center", style: { boxShadow: peerActive ? `0 0 ${Math.max(28, Math.min(110, 28 + peerLevel * 160))}px rgba(236,72,153,0.75), 0 0 ${Math.max(34, Math.min(140, 34 + peerLevel * 200))}px rgba(168,85,247,0.55)` : '0 0 28px rgba(236,72,153,0.35), 0 0 36px rgba(168,85,247,0.25)' }, children: peerAvatar ? _jsx("img", { className: "w-full h-full object-cover", src: peerAvatar, alt: "peer" }) : _jsx("span", { className: "text-3xl", children: "\uD83D\uDC64" }) }), _jsx("div", { className: "mt-2 text-white/80 text-sm text-center truncate max-w-full", children: peerName })] }), _jsxs("div", { className: "mt-2 flex items-center justify-center gap-3", children: [_jsx("button", { onClick: toggleCam, title: "Open Video", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z" }) }) }), _jsx("button", { onClick: toggleMic, title: "Open Audio", className: `h-10 w-10 rounded-full backdrop-blur-md border flex items-center justify-center transition ${!micUiMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'}`, children: _jsx("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "currentColor", children: _jsx("path", { d: "M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" }) }) })] })] }) }), _jsxs("div", { className: "h-1/2 px-2 pt-2 pb-3 border-t border-white/10 bg-black/70 flex flex-col", children: [_jsx("div", { id: "chatScroll", className: "flex-1 overflow-auto space-y-2 px-2 py-2 bg-white/5 rounded-xl border border-white/10", children: chat.length ? chat.map((m) => (_jsx("div", { className: `flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`, children: _jsxs("div", { className: `max-w-[78%] rounded-2xl px-3 py-2 border shadow-sm ${m.fromSelf ? 'bg-cyan-500/20 border-cyan-300/30' : 'bg-pink-500/15 border-pink-300/30'}`, children: [_jsx("div", { className: "whitespace-pre-wrap break-words text-white/95 leading-relaxed text-sm", children: m.text }), _jsx("div", { className: "mt-0.5 text-[10px] text-white/60 text-right", children: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }) }, m.id))) : (_jsx("div", { className: "text-xs text-white/60 text-center py-4", children: "No messages yet. Say hello!" })) }), _jsxs("form", { onSubmit: (e) => {

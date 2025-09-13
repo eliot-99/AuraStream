@@ -241,6 +241,17 @@ export default function SharedRoom() {
             return false;
         }
         socket.on('error', async (err) => {
+            if (err?.error === 'room_full') {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', text: 'The room is full' } }));
+                // Optionally redirect back to lobby after a short delay
+                setTimeout(() => {
+                    try {
+                        location.hash = '#/';
+                    }
+                    catch { }
+                }, 3000);
+                return;
+            }
             if (err?.error === 'access_denied') {
                 const reason = String(err?.reason || '');
                 if (/jwt/i.test(reason)) {
@@ -358,8 +369,14 @@ export default function SharedRoom() {
             }
             if (payload.type === 'navigate' && (payload.mode === 'audio' || payload.mode === 'video')) {
                 try {
-                    if (payload.url && payload.name)
-                        sessionStorage.setItem('shared:media', JSON.stringify({ url: payload.url, name: payload.name, kind: payload.mode }));
+                    // For remote peers, create a special media session that uses the WebRTC stream
+                    const peerStreamId = 'webrtc-peer-stream';
+                    sessionStorage.setItem('shared:media', JSON.stringify({
+                        url: peerStreamId, // Special identifier for peer stream
+                        name: payload.name || 'Shared Media',
+                        kind: payload.mode,
+                        isRemoteStream: true
+                    }));
                     sessionStorage.setItem('shared:mode', payload.mode);
                     if (payload.streamerId)
                         sessionStorage.setItem('shared:streamerId', String(payload.streamerId));
@@ -967,15 +984,16 @@ export default function SharedRoom() {
             if (!file)
                 return;
             const url = URL.createObjectURL(file);
+            const mode = file.type.startsWith('video/') ? 'video' : 'audio';
+            // Store media info for the local peer (with blob URL)
             try {
-                sessionStorage.setItem('shared:media', JSON.stringify({ url, name: file.name, kind: file.type.startsWith('video/') ? 'video' : 'audio' }));
+                sessionStorage.setItem('shared:media', JSON.stringify({ url, name: file.name, kind: mode }));
             }
             catch { }
             const el = document.createElement(file.type.startsWith('video/') ? 'video' : 'audio');
             el.src = url;
             el.controls = true;
             await el.play().catch(() => { });
-            const mode = file.type.startsWith('video/') ? 'video' : 'audio';
             if (mode === 'video') {
                 const stream = el.captureStream?.() || null;
                 if (localTopRef.current) {
@@ -1015,13 +1033,20 @@ export default function SharedRoom() {
                 capture.getTracks().forEach(t => pc.addTrack(t, capture));
             }
             await maybeNegotiate('choose-media');
-            // Persist role + navigate for both peers
+            // Persist role + navigate for all peers (send streamerId and mode without blob URL)
             try {
                 sessionStorage.setItem('shared:mode', mode);
                 sessionStorage.setItem('shared:streamerId', String(socketRef.current?.id || ''));
             }
             catch { }
-            socketRef.current?.emit('sync', { type: 'navigate', mode, url, name: file.name, streamerId: socketRef.current?.id });
+            // Notify other peers about media streaming (without sending the blob URL)
+            socketRef.current?.emit('sync', {
+                type: 'navigate',
+                mode,
+                name: file.name,
+                streamerId: socketRef.current?.id
+            });
+            // Navigate locally
             try {
                 location.hash = mode === 'video' ? '#/video-shared' : '#/audio-shared';
             }

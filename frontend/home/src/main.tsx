@@ -58,7 +58,7 @@ function App() {
     apply();
     window.addEventListener('hashchange', apply);
     return () => window.removeEventListener('hashchange', apply);
-  }, [screen]);
+  }, []); // Remove screen dependency to prevent re-registration
 
   if (screen === 'loading') {
     return <LoadingScreen />;
