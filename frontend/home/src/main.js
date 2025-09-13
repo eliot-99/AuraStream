@@ -28,9 +28,6 @@ function App() {
     // Simple hash-router to reach Auth before Together (after loading)
     React.useEffect(() => {
         const apply = () => {
-            // Don't interfere with loading screen
-            if (screen === 'loading')
-                return;
             const token = localStorage.getItem('auth');
             if (location.hash.startsWith('#/shared')) {
                 setScreen(token ? 'shared' : 'auth');
@@ -60,10 +57,13 @@ function App() {
                 setScreen('home');
             }
         };
-        apply();
+        // Only apply hash routing after loading screen is done
+        if (screen !== 'loading') {
+            apply();
+        }
         window.addEventListener('hashchange', apply);
         return () => window.removeEventListener('hashchange', apply);
-    }, []); // Remove screen dependency to prevent re-registration
+    }, [screen]); // Keep screen dependency but handle loading screen differently
     if (screen === 'loading') {
         return _jsx(LoadingScreen, {});
     }

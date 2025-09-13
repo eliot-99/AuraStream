@@ -31,9 +31,6 @@ function App() {
   // Simple hash-router to reach Auth before Together (after loading)
   React.useEffect(() => {
     const apply = () => {
-      // Don't interfere with loading screen
-      if (screen === 'loading') return;
-      
       const token = localStorage.getItem('auth');
       if (location.hash.startsWith('#/shared')) {
         setScreen(token ? 'shared' : 'auth');
@@ -55,10 +52,34 @@ function App() {
         setScreen('home');
       }
     };
-    apply();
+    
     window.addEventListener('hashchange', apply);
     return () => window.removeEventListener('hashchange', apply);
-  }, []); // Remove screen dependency to prevent re-registration
+  }, []); // Remove screen dependency to prevent interference
+  
+  // Handle initial hash on mount (after loading screen)
+  React.useEffect(() => {
+    if (screen === 'home' && location.hash) {
+      const token = localStorage.getItem('auth');
+      if (location.hash.startsWith('#/shared')) {
+        setScreen(token ? 'shared' : 'auth');
+      } else if (location.hash === '#/watch-together') {
+        setScreen(token ? 'together' : 'auth');
+      } else if (location.hash === '#/auth') {
+        setScreen('auth');
+      } else if (location.hash === '#/create-room') {
+        setScreen('create-room');
+      } else if (location.hash === '#/forgot-password') {
+        setScreen('forgot-password');
+      } else if (location.hash === '#/audio-shared') {
+        setScreen('audio-shared');
+      } else if (location.hash === '#/video-shared') {
+        setScreen('video-shared');
+      } else if (location.hash === '#/about') {
+        setScreen('about');
+      }
+    }
+  }, [screen]); // Only trigger when screen changes to 'home'
 
   if (screen === 'loading') {
     return <LoadingScreen />;
