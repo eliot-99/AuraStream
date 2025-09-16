@@ -285,45 +285,52 @@ export default function SharedRoom() {
       const [stream] = e.streams;
       console.log('Received remote stream with tracks:', stream.getTracks().map((t: MediaStreamTrack) => ({ kind: t.kind, enabled: t.enabled })));
       
-      // Determine stream type based on track properties and current state
       const hasVideo = stream.getVideoTracks().length > 0;
       const hasAudio = stream.getAudioTracks().length > 0;
       
-      // Check if this is a screen share, media stream, or webcam
-      const isScreenOrMedia = remoteIsScreenSharing || remoteStreamingMode !== 'none';
+      // Check track constraints to identify stream type
+      const videoTrack = stream.getVideoTracks()[0];
+      const isScreenShare = videoTrack && (
+        videoTrack.getSettings().displaySurface === 'monitor' ||
+        videoTrack.getSettings().displaySurface === 'window' ||
+        videoTrack.getSettings().displaySurface === 'application' ||
+        videoTrack.label.includes('screen') ||
+        remoteIsScreenSharing
+      );
       
-      if (isScreenOrMedia) {
-        // This is screen sharing or media streaming - show in main preview
+      const isMediaStream = !isScreenShare && (
+        remoteStreamingMode !== 'none' ||
+        videoTrack?.label.includes('media') ||
+        videoTrack?.label.includes('file')
+      );
+      
+      if (isScreenShare || isMediaStream) {
+        // Screen sharing or media streaming - show in main preview area
         setRemoteMediaStream(stream);
         if (mainPreviewRef.current) {
           mainPreviewRef.current.srcObject = stream;
-          mainPreviewRef.current.autoplay = true;
-          mainPreviewRef.current.playsInline = true;
-          mainPreviewRef.current.play().catch(err => console.log('Main preview autoplay failed:', err));
+          mainPreviewRef.current.play().catch(err => console.log('Main preview failed:', err));
         }
-        pushToast(`Remote ${remoteIsScreenSharing ? 'screen sharing' : 'media streaming'} connected!`, 'success');
+        pushToast(`Remote ${isScreenShare ? 'screen sharing' : 'media streaming'} connected!`, 'success');
       } else {
-        // This is regular webcam - show in avatar circle
+        // Regular webcam stream - show in avatar circles and panels
         setRemoteWebcamStream(stream);
-        if (remotePanelRef.current) {
-          remotePanelRef.current.srcObject = stream;
-          remotePanelRef.current.autoplay = true;
-          remotePanelRef.current.playsInline = true;
-          remotePanelRef.current.play().catch(err => console.log('Remote panel autoplay failed:', err));
-        }
+        setRemoteHasVideo(hasVideo);
+        
+        // Set for both avatar and panel views
         if (remoteTopRef.current) {
           remoteTopRef.current.srcObject = stream;
-          remoteTopRef.current.autoplay = true;
-          remoteTopRef.current.playsInline = true;
-          remoteTopRef.current.play().catch(err => console.log('Remote video autoplay failed:', err));
+          remoteTopRef.current.play().catch(err => console.log('Remote top video failed:', err));
+        }
+        if (remotePanelRef.current) {
+          remotePanelRef.current.srcObject = stream;
+          remotePanelRef.current.play().catch(err => console.log('Remote panel video failed:', err));
         }
         
         if (hasVideo) {
-          pushToast('Remote video feed connected!', 'success');
+          pushToast('Remote video connected!', 'success');
         }
       }
-      
-      setRemoteHasVideo(hasVideo);
       
       if (hasAudio) {
         pushToast('Remote audio connected!', 'success');
@@ -393,18 +400,20 @@ export default function SharedRoom() {
 
   // Camera and microphone controls
   async function toggleCamera() {
-    if (!peerPresent) return;
-    
-    setCamOn(prev => {
-      const next = !prev;
-      if (next) {
-        startWebcam();
+    try {
+      if (camOn) {
+        await stopWebcam();
+        setCamOn(false);
+        socketRef.current?.emit('control', { type: 'state', camOn: false });
       } else {
-        stopWebcam();
+        await startWebcam();
+        setCamOn(true);
+        socketRef.current?.emit('control', { type: 'state', camOn: true });
       }
-      socketRef.current?.emit('control', { type: 'state', camOn: next, micMuted });
-      return next;
-    });
+    } catch (error) {
+      console.error('Camera toggle failed:', error);
+      pushToast('Camera toggle failed', 'error');
+    }
   }
 
   async function startWebcam() {
@@ -467,8 +476,6 @@ export default function SharedRoom() {
   }
 
   function toggleMic() {
-    if (!peerPresent) return;
-    
     setMicMuted(prev => {
       const next = !prev;
       const audioTrack = localStreamRef.current?.getAudioTracks()[0];
@@ -940,39 +947,48 @@ export default function SharedRoom() {
 
           {/* Main Preview Section for Screen Sharing and Media Streaming */}
           <div className="mt-6 mx-auto max-w-6xl space-y-4">
-            {/* Remote screen share/media stream */}
+            {/* Remote screen share/media stream - FULLSCREEN */}
             {(remoteIsScreenSharing || remoteStreamingMode !== 'none') && (
-              <div className="relative bg-black/40 backdrop-blur-md border border-white/20 rounded-2xl overflow-hidden">
-                <div className="aspect-video">
-                  <video 
-                    ref={mainPreviewRef}
-                    className="w-full h-full object-contain"
-                    playsInline
-                    autoPlay
-                  />
-                </div>
-                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/20 rounded-xl px-3 py-2">
+              <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
+                <video 
+                  ref={mainPreviewRef}
+                  className="w-full h-full object-contain"
+                  playsInline
+                  autoPlay
+                />
+                <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-md border border-white/30 rounded-xl px-4 py-2">
                   <div className="flex items-center gap-2 text-white text-sm">
                     <span className={`w-2 h-2 rounded-full animate-pulse ${remoteIsScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
                     <span>{peerName || 'Peer'} is {remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}</span>
                   </div>
                 </div>
+                <button 
+                  onClick={() => {
+                    setRemoteIsScreenSharing(false);
+                    setRemoteStreamingMode('none');
+                    if (mainPreviewRef.current) {
+                      mainPreviewRef.current.srcObject = null;
+                    }
+                  }}
+                  className="absolute top-4 right-4 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-full p-2 transition"
+                  title="Exit fullscreen"
+                >
+                  ✕
+                </button>
               </div>
             )}
             
-            {/* Local screen share/media stream */}
+            {/* Local screen share/media stream - FULLSCREEN */}
             {(isScreenSharing || isStreaming) && (
-              <div className="relative bg-black/40 backdrop-blur-md border border-white/20 rounded-2xl overflow-hidden">
-                <div className="aspect-video">
-                  <video 
-                    ref={localMainPreviewRef}
-                    className="w-full h-full object-contain"
-                    playsInline
-                    autoPlay
-                    muted
-                  />
-                </div>
-                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/20 rounded-xl px-3 py-2">
+              <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
+                <video 
+                  ref={localMainPreviewRef}
+                  className="w-full h-full object-contain"
+                  playsInline
+                  autoPlay
+                  muted
+                />
+                <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-md border border-white/30 rounded-xl px-4 py-2">
                   <div className="flex items-center gap-2 text-white text-sm">
                     <span className={`w-2 h-2 rounded-full animate-pulse ${isScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
                     <span>You are {isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}</span>
@@ -981,7 +997,7 @@ export default function SharedRoom() {
                 <div className="absolute top-4 right-4 flex gap-2">
                   <button 
                     onClick={isScreenSharing ? stopScreenShare : stopMediaStreaming}
-                    className="px-3 py-2 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-xl text-sm transition"
+                    className="px-4 py-2 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-xl text-sm transition"
                   >
                     Stop Sharing
                   </button>
@@ -1095,10 +1111,9 @@ export default function SharedRoom() {
               onClick={toggleCamera} 
               aria-label="Camera" 
               title="Camera" 
-              disabled={participants < 2} 
               className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${
                 camOn ? 'bg-cyan-600/40 border-cyan-400 text-white' : 'bg-white/10 border-white/30 text-white/90'
-              } ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              }`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M17 10.5V7a2 2 0 0 0-2-2H5C3.895 5 3 5.895 3 7v10c0 1.105.895 2 2 2h10a2 2 0 0 0 2-2v-3.5l4 3.5V7l-4 3.5z"/>
@@ -1110,10 +1125,9 @@ export default function SharedRoom() {
               onClick={toggleMic} 
               aria-label="Microphone" 
               title="Microphone" 
-              disabled={participants < 2} 
               className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${
                 !micMuted ? 'bg-green-600/40 border-green-400 text-white' : 'bg-white/10 border-white/30 text-white/90'
-              } ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              }`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
@@ -1125,10 +1139,9 @@ export default function SharedRoom() {
               onClick={isScreenSharing ? stopScreenShare : startScreenShare} 
               aria-label="Screen Share" 
               title="Screen Share" 
-              disabled={participants < 2} 
               className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${
                 isScreenSharing ? 'bg-purple-600/40 border-purple-400 text-white' : 'bg-white/10 border-white/30 text-white/90'
-              } ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              }`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/>
@@ -1140,10 +1153,9 @@ export default function SharedRoom() {
               onClick={() => setChatOpen(v => !v)} 
               aria-label="Chat" 
               title="Chat" 
-              disabled={participants < 2} 
               className={`relative h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${
                 chatOpen ? 'bg-blue-600/40 border-blue-400 text-white' : 'bg-white/10 border-white/30 text-white/90'
-              } ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              }`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z"/>
@@ -1160,10 +1172,9 @@ export default function SharedRoom() {
               onClick={chooseMedia} 
               aria-label="Stream Media" 
               title="Stream Media File" 
-              disabled={participants < 2} 
               className={`h-12 w-12 rounded-full backdrop-blur-md border hover:scale-110 transition flex items-center justify-center ${
                 isStreaming ? 'bg-orange-600/40 border-orange-400 text-white' : 'bg-white/10 border-white/30 text-white/90'
-              } ${participants < 2 ? 'opacity-50 cursor-not-allowed' : ''}`}
+              }`}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/>
