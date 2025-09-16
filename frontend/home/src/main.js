@@ -12,8 +12,6 @@ import SharedRoom from './screens/SharedRoom';
 import Auth from './screens/Auth';
 import CreateRoom from './screens/CreateRoom';
 import ForgotPassword from './screens/ForgotPassword';
-import AudioPlayerShared from './screens/AudioPlayerShared';
-import VideoPlayerShared from './screens/VideoPlayerShared';
 import About from './screens/About';
 function App() {
     const [screen, setScreen] = React.useState('loading');
@@ -44,12 +42,6 @@ function App() {
             else if (location.hash === '#/forgot-password') {
                 setScreen('forgot-password');
             }
-            else if (location.hash === '#/audio-shared') {
-                setScreen('audio-shared');
-            }
-            else if (location.hash === '#/video-shared') {
-                setScreen('video-shared');
-            }
             else if (location.hash === '#/about') {
                 setScreen('about');
             }
@@ -57,13 +49,33 @@ function App() {
                 setScreen('home');
             }
         };
-        // Only apply hash routing after loading screen is done
-        if (screen !== 'loading') {
-            apply();
-        }
         window.addEventListener('hashchange', apply);
         return () => window.removeEventListener('hashchange', apply);
-    }, [screen]); // Keep screen dependency but handle loading screen differently
+    }, []); // Remove screen dependency to prevent interference
+    // Handle initial hash on mount (after loading screen)
+    React.useEffect(() => {
+        if (screen === 'home' && location.hash) {
+            const token = localStorage.getItem('auth');
+            if (location.hash.startsWith('#/shared')) {
+                setScreen(token ? 'shared' : 'auth');
+            }
+            else if (location.hash === '#/watch-together') {
+                setScreen(token ? 'together' : 'auth');
+            }
+            else if (location.hash === '#/auth') {
+                setScreen('auth');
+            }
+            else if (location.hash === '#/create-room') {
+                setScreen('create-room');
+            }
+            else if (location.hash === '#/forgot-password') {
+                setScreen('forgot-password');
+            }
+            else if (location.hash === '#/about') {
+                setScreen('about');
+            }
+        }
+    }, [screen]); // Only trigger when screen changes to 'home'
     if (screen === 'loading') {
         return _jsx(LoadingScreen, {});
     }
@@ -87,23 +99,6 @@ function App() {
     }
     if (screen === 'shared') {
         return _jsx(SharedRoom, {});
-    }
-    if (screen === 'audio-shared') {
-        // hydrate from session
-        let shared = null;
-        try {
-            shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null');
-        }
-        catch { }
-        return _jsx(AudioPlayerShared, { onBack: () => { location.hash = '#/shared'; }, src: shared?.url, name: shared?.name });
-    }
-    if (screen === 'video-shared') {
-        let shared = null;
-        try {
-            shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null');
-        }
-        catch { }
-        return _jsx(VideoPlayerShared, { onBack: () => { location.hash = '#/shared'; }, src: shared?.url });
     }
     if (screen === 'solo') {
         return (_jsx(SoloSelect, { onBack: () => setScreen('home'), onPicked: (m) => {

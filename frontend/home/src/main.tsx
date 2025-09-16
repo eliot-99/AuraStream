@@ -11,12 +11,10 @@ import SharedRoom from './screens/SharedRoom';
 import Auth from './screens/Auth';
 import CreateRoom from './screens/CreateRoom';
 import ForgotPassword from './screens/ForgotPassword';
-import AudioPlayerShared from './screens/AudioPlayerShared';
-import VideoPlayerShared from './screens/VideoPlayerShared';
 import About from './screens/About';
 
 function App() {
-  const [screen, setScreen] = React.useState<'loading' | 'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'audio-shared' | 'video-shared' | 'about'>('loading');
+  const [screen, setScreen] = React.useState<'loading' | 'home' | 'solo' | 'audio' | 'video' | 'together' | 'auth' | 'create-room' | 'forgot-password' | 'shared' | 'about'>('loading');
   const [media, setMedia] = React.useState<{ url: string; name: string; kind: 'audio' | 'video' } | null>(null);
 
   // Loading screen timer
@@ -42,10 +40,6 @@ function App() {
         setScreen('create-room');
       } else if (location.hash === '#/forgot-password') {
         setScreen('forgot-password');
-      } else if (location.hash === '#/audio-shared') {
-        setScreen('audio-shared');
-      } else if (location.hash === '#/video-shared') {
-        setScreen('video-shared');
       } else if (location.hash === '#/about') {
         setScreen('about');
       } else if (location.hash === '#/home' || location.hash === '') {
@@ -71,10 +65,6 @@ function App() {
         setScreen('create-room');
       } else if (location.hash === '#/forgot-password') {
         setScreen('forgot-password');
-      } else if (location.hash === '#/audio-shared') {
-        setScreen('audio-shared');
-      } else if (location.hash === '#/video-shared') {
-        setScreen('video-shared');
       } else if (location.hash === '#/about') {
         setScreen('about');
       }
@@ -105,17 +95,6 @@ function App() {
   }
   if (screen === 'shared') {
     return <SharedRoom />;
-  }
-  if (screen === 'audio-shared') {
-    // hydrate from session
-    let shared: any = null;
-    try { shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null'); } catch {}
-    return <AudioPlayerShared onBack={() => { location.hash = '#/shared'; }} src={shared?.url} name={shared?.name} />;
-  }
-  if (screen === 'video-shared') {
-    let shared: any = null;
-    try { shared = JSON.parse(sessionStorage.getItem('shared:media') || 'null'); } catch {}
-    return <VideoPlayerShared onBack={() => { location.hash = '#/shared'; }} src={shared?.url} />;
   }
   if (screen === 'solo') {
     return (
