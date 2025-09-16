@@ -244,6 +244,10 @@ export default function SharedRoom() {
       if (payload.type === 'media-stop') {
         setRemoteStreamingMode('none');
         setRemoteMediaStream(null);
+        // Clear main preview
+        if (mainPreviewRef.current) {
+          mainPreviewRef.current.srcObject = null;
+        }
         pushToast(`${peerName || 'Peer'} stopped streaming`, 'info');
       }
 
@@ -255,6 +259,10 @@ export default function SharedRoom() {
       if (payload.type === 'screen-share-stop') {
         setRemoteIsScreenSharing(false);
         setRemoteMediaStream(null);
+        // Clear main preview
+        if (mainPreviewRef.current) {
+          mainPreviewRef.current.srcObject = null;
+        }
         pushToast(`${peerName || 'Peer'} stopped screen sharing`, 'info');
       }
 
@@ -288,39 +296,49 @@ export default function SharedRoom() {
       const hasVideo = stream.getVideoTracks().length > 0;
       const hasAudio = stream.getAudioTracks().length > 0;
       
-      // Check track constraints to identify stream type
+      // Check if this is screen sharing or media streaming
       const videoTrack = stream.getVideoTracks()[0];
       const isScreenShare = videoTrack && (
         videoTrack.getSettings().displaySurface === 'monitor' ||
         videoTrack.getSettings().displaySurface === 'window' ||
         videoTrack.getSettings().displaySurface === 'application' ||
-        videoTrack.label.includes('screen') ||
-        remoteIsScreenSharing
+        videoTrack.label.includes('screen')
       );
       
-      const isMediaStream = !isScreenShare && (
-        remoteStreamingMode !== 'none' ||
-        videoTrack?.label.includes('media') ||
-        videoTrack?.label.includes('file')
-      );
-      
-      if (isScreenShare || isMediaStream) {
-        // Screen sharing or media streaming - show in main preview area
+      // Determine if this is screen/media content vs webcam
+      if (remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenShare) {
+        // THIS IS SCREEN SHARING OR MEDIA - GOES TO MAIN RECTANGLE ONLY
+        console.log('Routing to MAIN RECTANGLE: Screen/Media stream');
         setRemoteMediaStream(stream);
+        
+        // CLEAR any webcam video in avatar circle
+        setRemoteWebcamStream(null);
+        if (remoteTopRef.current) remoteTopRef.current.srcObject = null;
+        if (remotePanelRef.current) remotePanelRef.current.srcObject = null;
+        
+        // SET main preview
         if (mainPreviewRef.current) {
           mainPreviewRef.current.srcObject = stream;
           mainPreviewRef.current.play().catch(err => console.log('Main preview failed:', err));
         }
+        
         pushToast(`Remote ${isScreenShare ? 'screen sharing' : 'media streaming'} connected!`, 'success');
+        
       } else {
-        // Regular webcam stream - show in avatar circles and panels
+        // THIS IS REGULAR WEBCAM - GOES TO AVATAR CIRCLE ONLY
+        console.log('Routing to AVATAR CIRCLE: Webcam stream');
         setRemoteWebcamStream(stream);
         setRemoteHasVideo(hasVideo);
         
-        // Set for both avatar and panel views
+        // CLEAR main preview if it was showing webcam
+        if (mainPreviewRef.current && !remoteIsScreenSharing && remoteStreamingMode === 'none') {
+          mainPreviewRef.current.srcObject = null;
+        }
+        
+        // SET avatar circle videos
         if (remoteTopRef.current) {
           remoteTopRef.current.srcObject = stream;
-          remoteTopRef.current.play().catch(err => console.log('Remote top video failed:', err));
+          remoteTopRef.current.play().catch(err => console.log('Remote avatar video failed:', err));
         }
         if (remotePanelRef.current) {
           remotePanelRef.current.srcObject = stream;
@@ -328,7 +346,7 @@ export default function SharedRoom() {
         }
         
         if (hasVideo) {
-          pushToast('Remote video connected!', 'success');
+          pushToast('Remote webcam connected!', 'success');
         }
       }
       
@@ -947,60 +965,72 @@ export default function SharedRoom() {
 
           {/* Main Preview Section for Screen Sharing and Media Streaming */}
           <div className="mt-6 mx-auto max-w-6xl space-y-4">
-            {/* Remote screen share/media stream - FULLSCREEN */}
+            {/* Remote screen share/media stream - MAIN RECTANGLE 90% SCREEN */}
             {(remoteIsScreenSharing || remoteStreamingMode !== 'none') && (
-              <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
-                <video 
-                  ref={mainPreviewRef}
-                  className="w-full h-full object-contain"
-                  playsInline
-                  autoPlay
-                />
-                <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-md border border-white/30 rounded-xl px-4 py-2">
-                  <div className="flex items-center gap-2 text-white text-sm">
-                    <span className={`w-2 h-2 rounded-full animate-pulse ${remoteIsScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
-                    <span>{peerName || 'Peer'} is {remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}</span>
+              <div className="fixed inset-4 z-40 bg-black/95 backdrop-blur-lg border border-white/20 rounded-3xl overflow-hidden shadow-2xl">
+                <div className="h-full flex flex-col">
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-4 bg-black/60 border-b border-white/10">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-3 h-3 rounded-full animate-pulse ${remoteIsScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
+                      <span className="text-white font-medium">{peerName || 'Peer'} is {remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}</span>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setRemoteIsScreenSharing(false);
+                        setRemoteStreamingMode('none');
+                        if (mainPreviewRef.current) {
+                          mainPreviewRef.current.srcObject = null;
+                        }
+                      }}
+                      className="bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-full p-2 transition"
+                      title="Close preview"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  
+                  {/* Video Content */}
+                  <div className="flex-1 flex items-center justify-center bg-black">
+                    <video 
+                      ref={mainPreviewRef}
+                      className="max-w-full max-h-full object-contain"
+                      playsInline
+                      autoPlay
+                    />
                   </div>
                 </div>
-                <button 
-                  onClick={() => {
-                    setRemoteIsScreenSharing(false);
-                    setRemoteStreamingMode('none');
-                    if (mainPreviewRef.current) {
-                      mainPreviewRef.current.srcObject = null;
-                    }
-                  }}
-                  className="absolute top-4 right-4 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-full p-2 transition"
-                  title="Exit fullscreen"
-                >
-                  ✕
-                </button>
               </div>
             )}
             
-            {/* Local screen share/media stream - FULLSCREEN */}
+            {/* Local screen share/media stream - MAIN RECTANGLE 90% SCREEN */}
             {(isScreenSharing || isStreaming) && (
-              <div className="fixed inset-0 z-50 bg-black flex items-center justify-center">
-                <video 
-                  ref={localMainPreviewRef}
-                  className="w-full h-full object-contain"
-                  playsInline
-                  autoPlay
-                  muted
-                />
-                <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-md border border-white/30 rounded-xl px-4 py-2">
-                  <div className="flex items-center gap-2 text-white text-sm">
-                    <span className={`w-2 h-2 rounded-full animate-pulse ${isScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
-                    <span>You are {isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}</span>
+              <div className="fixed inset-4 z-40 bg-black/95 backdrop-blur-lg border border-white/20 rounded-3xl overflow-hidden shadow-2xl">
+                <div className="h-full flex flex-col">
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-4 bg-black/60 border-b border-white/10">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-3 h-3 rounded-full animate-pulse ${isScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
+                      <span className="text-white font-medium">You are {isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}</span>
+                    </div>
+                    <button 
+                      onClick={isScreenSharing ? stopScreenShare : stopMediaStreaming}
+                      className="px-4 py-2 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-xl text-sm transition"
+                    >
+                      Stop Sharing
+                    </button>
                   </div>
-                </div>
-                <div className="absolute top-4 right-4 flex gap-2">
-                  <button 
-                    onClick={isScreenSharing ? stopScreenShare : stopMediaStreaming}
-                    className="px-4 py-2 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-xl text-sm transition"
-                  >
-                    Stop Sharing
-                  </button>
+                  
+                  {/* Video Content */}
+                  <div className="flex-1 flex items-center justify-center bg-black">
+                    <video 
+                      ref={localMainPreviewRef}
+                      className="max-w-full max-h-full object-contain"
+                      playsInline
+                      autoPlay
+                      muted
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -1030,7 +1060,7 @@ export default function SharedRoom() {
                     myAvatar ? (
                       <img src={myAvatar} alt="Me" className="h-full w-full object-cover" />
                     ) : (
-                      <div className="text-6xl">👤</div>
+                      <div className="text-5xl text-white/70">👤</div>
                     )
                   )}
                 </div>
@@ -1077,7 +1107,7 @@ export default function SharedRoom() {
                     peerAvatar ? (
                       <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
                     ) : (
-                      <div className="text-6xl">👤</div>
+                      <div className="text-5xl text-white/70">👤</div>
                     )
                   )}
                 </div>
