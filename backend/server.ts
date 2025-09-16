@@ -224,6 +224,15 @@ io.on('connection', (socket) => {
       console.log('[SOCKET][handshake]', { id: socket.id, room: rn, count, name: payload?.name, hasAvatar: !!payload?.avatar });
       io.to(rn).emit('userJoined', { id: socket.id, room: rn, count, name: payload.name, avatar: payload.avatar });
       io.to(rn).emit('roomUpdate', { room: rn, members: Array.from(members || []), count });
+      
+      // Send connection success notification when 2 peers are connected
+      if (count === 2) {
+        io.to(rn).emit('control', { 
+          type: 'connection_established', 
+          message: 'Successfully connected to peer!',
+          participantCount: count
+        });
+      }
     } catch (e) {
       console.error('[SOCKET][handshake][error]', e);
     }
@@ -232,8 +241,8 @@ io.on('connection', (socket) => {
   socket.on('signal', (payload: any) => {
     if (!roomName) return;
     const type = payload?.type || typeof payload;
-    // Whitelist only expected types
-    if (!['offer','answer','ice-candidate'].includes(type)) return;
+    // Whitelist expected types (support both 'ice' and 'ice-candidate' for compatibility)
+    if (!['offer','answer','ice','ice-candidate'].includes(type)) return;
     const targetId = typeof payload?.to === 'string' ? payload.to : '';
     const logBase = { from: socket.id, room: roomName, type, hasSdp: !!payload?.sdp, hasCandidate: !!payload?.candidate } as any;
     try {
@@ -817,7 +826,7 @@ app.post('/api/webrtc/signal', async (req, res) => {
     const { room, payload, senderId, accessToken } = (req.body || {}) as any;
     if (!room || !payload) return res.status(400).json({ error: 'Missing fields' });
     const type = String(payload.type);
-    if (!['offer','answer','ice-candidate'].includes(type)) {
+    if (!['offer','answer','ice','ice-candidate'].includes(type)) {
       console.warn('[API][webrtc][signal][drop]', { room, type, senderId });
       return res.status(400).json({ error: 'Invalid signal type' });
     }

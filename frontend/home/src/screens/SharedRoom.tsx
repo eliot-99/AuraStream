@@ -248,6 +248,10 @@ export default function SharedRoom() {
         setIsScreenSharing(false);
         pushToast(`${peerName || 'Peer'} stopped screen sharing`, 'info');
       }
+
+      if (payload.type === 'connection_established') {
+        pushToast(payload.message || 'Successfully connected to peer!', 'success');
+      }
     });
 
     return () => {
@@ -270,9 +274,29 @@ export default function SharedRoom() {
 
     pc.ontrack = e => {
       const [stream] = e.streams;
-      if (remoteTopRef.current) remoteTopRef.current.srcObject = stream;
-      if (remotePanelRef.current) remotePanelRef.current.srcObject = stream;
+      if (remoteTopRef.current) {
+        remoteTopRef.current.srcObject = stream;
+        remoteTopRef.current.autoplay = true;
+        remoteTopRef.current.playsInline = true;
+        // Auto-play audio
+        remoteTopRef.current.play().catch(err => console.log('Remote video autoplay failed:', err));
+      }
+      if (remotePanelRef.current) {
+        remotePanelRef.current.srcObject = stream;
+        remotePanelRef.current.autoplay = true;
+        remotePanelRef.current.playsInline = true;
+        // Auto-play audio
+        remotePanelRef.current.play().catch(err => console.log('Remote panel autoplay failed:', err));
+      }
       setRemoteHasVideo(stream.getVideoTracks().length > 0);
+      
+      // Show success message when remote video is received
+      if (stream.getVideoTracks().length > 0) {
+        pushToast('Remote video feed connected!', 'success');
+      }
+      if (stream.getAudioTracks().length > 0) {
+        pushToast('Remote audio connected!', 'success');
+      }
     };
 
     pc.onconnectionstatechange = () => {
@@ -360,11 +384,39 @@ export default function SharedRoom() {
       });
       
       localStreamRef.current = stream;
-      if (localTopRef.current) localTopRef.current.srcObject = stream;
-      if (localPanelRef.current) localPanelRef.current.srcObject = stream;
+      if (localTopRef.current) {
+        localTopRef.current.srcObject = stream;
+        localTopRef.current.autoplay = true;
+        localTopRef.current.muted = true; // Local video should be muted to prevent feedback
+        localTopRef.current.play().catch(err => console.log('Local video autoplay failed:', err));
+      }
+      if (localPanelRef.current) {
+        localPanelRef.current.srcObject = stream;
+        localPanelRef.current.autoplay = true;
+        localPanelRef.current.muted = true; // Local video should be muted to prevent feedback
+        localPanelRef.current.play().catch(err => console.log('Local panel autoplay failed:', err));
+      }
       
       const pc = ensurePC();
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      
+      // Remove existing tracks before adding new ones
+      const senders = pc.getSenders();
+      for (const sender of senders) {
+        if (sender.track) {
+          try {
+            pc.removeTrack(sender);
+          } catch (e) {
+            console.log('Could not remove track:', e);
+          }
+        }
+      }
+      
+      // Add new tracks
+      stream.getTracks().forEach(track => {
+        console.log('Adding track:', track.kind, track.enabled);
+        pc.addTrack(track, stream);
+      });
+      
       await maybeNegotiate('webcam-start');
       
       pushToast('Webcam started', 'success');
@@ -405,24 +457,31 @@ export default function SharedRoom() {
       
       screenStreamRef.current = stream;
       
-      // Replace video track in peer connection
+      // Replace tracks in peer connection
       const pc = ensurePC();
-      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
       const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
       
-      if (sender && videoTrack) {
-        await sender.replaceTrack(videoTrack);
-      } else if (videoTrack) {
-        pc.addTrack(videoTrack, stream);
+      // Replace video track
+      if (videoTrack) {
+        const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (videoSender) {
+          console.log('Replacing video track with screen share');
+          await videoSender.replaceTrack(videoTrack);
+        } else {
+          console.log('Adding screen share video track');
+          pc.addTrack(videoTrack, stream);
+        }
       }
 
-      // Handle audio track
-      const audioTrack = stream.getAudioTracks()[0];
+      // Replace or add audio track
       if (audioTrack) {
         const audioSender = pc.getSenders().find(s => s.track?.kind === 'audio');
         if (audioSender) {
+          console.log('Replacing audio track with screen share audio');
           await audioSender.replaceTrack(audioTrack);
         } else {
+          console.log('Adding screen share audio track');
           pc.addTrack(audioTrack, stream);
         }
       }
@@ -431,9 +490,11 @@ export default function SharedRoom() {
       setStreamingMode('screen');
       
       // Handle screen share ending
-      videoTrack.onended = () => {
-        stopScreenShare();
-      };
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
       
       socketRef.current?.emit('control', { type: 'screen-share-start' });
       await maybeNegotiate('screen-share');
@@ -515,15 +576,25 @@ export default function SharedRoom() {
       
       mediaStreamRef.current = captureStream;
       
+      // Show media element in local video for preview
+      if (localTopRef.current && mode === 'video') {
+        localTopRef.current.srcObject = captureStream;
+        localTopRef.current.play().catch(err => console.log('Media preview failed:', err));
+      }
+      
       // Replace tracks in peer connection
       const pc = ensurePC();
       const tracks = captureStream.getTracks();
       
+      console.log('Media streaming tracks:', tracks.map((t: MediaStreamTrack) => ({ kind: t.kind, enabled: t.enabled })));
+      
       for (const track of tracks) {
         const sender = pc.getSenders().find(s => s.track?.kind === track.kind);
         if (sender) {
+          console.log(`Replacing ${track.kind} track for media streaming`);
           await sender.replaceTrack(track);
         } else {
+          console.log(`Adding ${track.kind} track for media streaming`);
           pc.addTrack(track, captureStream);
         }
       }
@@ -795,6 +866,7 @@ export default function SharedRoom() {
                     ref={localTopRef} 
                     className="h-full w-full object-cover" 
                     playsInline 
+                    autoPlay
                     muted 
                     style={{ 
                       display: camOn ? 'block' : 'none', 
@@ -830,6 +902,7 @@ export default function SharedRoom() {
                     ref={remoteTopRef} 
                     className="h-full w-full object-cover" 
                     playsInline 
+                    autoPlay
                     style={{ display: remoteHasVideo ? 'block' : 'none' }} 
                   />
                   
@@ -1096,6 +1169,7 @@ export default function SharedRoom() {
                   ref={localPanelRef} 
                   className="w-full h-full object-cover" 
                   playsInline 
+                  autoPlay
                   muted 
                   style={{ 
                     display: camOn ? 'block' : 'none', 
@@ -1133,6 +1207,7 @@ export default function SharedRoom() {
                   ref={remotePanelRef} 
                   className="w-full h-full object-cover" 
                   playsInline 
+                  autoPlay
                   style={{ display: remoteHasVideo ? 'block' : 'none' }} 
                 />
                 {!remoteHasVideo && (
