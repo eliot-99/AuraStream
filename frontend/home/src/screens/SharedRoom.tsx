@@ -964,158 +964,259 @@ export default function SharedRoom() {
           </div>
 
           {/* Main content area - flexible height */}
-          <div className="flex-1 flex flex-col justify-center px-4">
-            {/* Screen Sharing and Media Streaming Preview Area - INSIDE MAIN RECTANGLE */}
-            {(remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenSharing || isStreaming) && (
-              <div className="mb-6 bg-black/95 backdrop-blur-lg border border-white/20 rounded-2xl overflow-hidden shadow-2xl">
-                <div className="flex flex-col h-[300px]">
-                  {/* Header */}
-                  <div className="flex items-center justify-between p-3 bg-black/60 border-b border-white/10">
-                    <div className="flex items-center gap-3">
-                      <span className={`w-3 h-3 rounded-full animate-pulse ${
-                        (isScreenSharing || remoteIsScreenSharing) ? 'bg-purple-400' : 'bg-orange-400'
-                      }`}></span>
-                      <span className="text-white font-medium text-sm">
-                        {(remoteIsScreenSharing || remoteStreamingMode !== 'none') 
-                          ? `${peerName || 'Peer'} is ${remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}`
-                          : `You are ${isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}`
-                        }
-                      </span>
-                    </div>
-                    <button 
-                      onClick={() => {
-                        if (remoteIsScreenSharing || remoteStreamingMode !== 'none') {
-                          setRemoteIsScreenSharing(false);
-                          setRemoteStreamingMode('none');
-                          if (mainPreviewRef.current) {
-                            mainPreviewRef.current.srcObject = null;
-                          }
-                        } else if (isScreenSharing) {
-                          stopScreenShare();
-                        } else if (isStreaming) {
-                          stopMediaStreaming();
-                        }
-                      }}
-                      className="px-3 py-1 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-lg text-xs transition"
-                    >
-                      {(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? 'Close' : 'Stop'}
-                    </button>
-                  </div>
-                  
-                  {/* Video Content */}
-                  <div className="flex-1 flex items-center justify-center bg-black">
-                    <video 
-                      ref={(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? mainPreviewRef : localMainPreviewRef}
-                      className="max-w-full max-h-full object-contain"
-                      playsInline
-                      autoPlay
-                      muted={(isScreenSharing || isStreaming)}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-          {/* Avatars/Video Circles */}
-          <div className="mt-6 flex items-center justify-center gap-10 sm:gap-16 md:gap-20 lg:gap-28 px-2">
-            {/* Self (host) */}
-            <div className="flex flex-col items-center">
-              <div className="relative">
-                <div 
-                  className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44 cursor-pointer hover:scale-105 transition-transform"
-                  onClick={() => camOn && setShowWebcamView(!showWebcamView)}
-                >
-                  <video 
-                    ref={localTopRef} 
-                    className="h-full w-full object-cover" 
-                    playsInline 
-                    autoPlay
-                    muted 
-                    style={{ 
-                      display: camOn ? 'block' : 'none', 
-                      transform: 'scaleX(-1)' 
-                    }} 
-                  />
-                  {!camOn && (
-                    myAvatar ? (
-                      <img src={myAvatar} alt="Me" className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="text-5xl text-white/70">👤</div>
-                    )
-                  )}
-                </div>
-                <div 
-                  id="host-glow" 
-                  className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-cyan-400/80" 
-                  style={{ opacity: 0.5, filter: 'blur(60px)' }} 
-                />
-              </div>
-              <div className="text-white/90 text-sm mt-2 text-center max-w-[11rem] truncate">{myName}</div>
-            </div>
-
-            {/* Peer */}
-            <div className="flex flex-col items-center">
-              <div className="relative">
-                <div 
-                  className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-36 w-36 sm:h-40 sm:w-40 md:h-44 md:w-44 cursor-pointer hover:scale-105 transition-transform"
-                  onClick={() => (remoteHasVideo || camOn) && setShowWebcamView(!showWebcamView)}
-                >
-                  {/* Remote video */}
-                  <video 
-                    ref={remoteTopRef} 
-                    className="h-full w-full object-cover" 
-                    playsInline 
-                    autoPlay
-                    style={{ display: remoteHasVideo ? 'block' : 'none' }} 
-                  />
-                  
-                  {/* Placeholder with loader before peer joins */}
-                  {!peerPresent && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="flex items-end gap-1">
-                        <div className="w-2 h-4 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <div className="w-2 h-6 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '120ms' }} />
-                        <div className="w-2 h-9 bg-pink-500 rounded animate-bounce" style={{ animationDelay: '240ms' }} />
-                        <div className="w-2 h-6 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '360ms' }} />
-                        <div className="w-2 h-4 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '480ms' }} />
+          <div className="flex-1 flex px-4 py-4">
+            {/* Conditional Layout: Preview active vs large circles */}
+            {(remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenSharing || isStreaming) ? (
+              /* LAYOUT WITH PREVIEW: Preview left, small circles right */
+              <>
+                {/* Left side - Preview Area */}
+                <div className="flex-1 mr-4">
+                  <div className="bg-black/95 backdrop-blur-lg border border-white/20 rounded-2xl overflow-hidden shadow-2xl h-full">
+                    <div className="flex flex-col h-full">
+                      {/* Header */}
+                      <div className="flex items-center justify-between p-3 bg-black/60 border-b border-white/10">
+                        <div className="flex items-center gap-3">
+                          <span className={`w-3 h-3 rounded-full animate-pulse ${
+                            (isScreenSharing || remoteIsScreenSharing) ? 'bg-purple-400' : 'bg-orange-400'
+                          }`}></span>
+                          <span className="text-white font-medium text-sm">
+                            {(remoteIsScreenSharing || remoteStreamingMode !== 'none') 
+                              ? `${peerName || 'Peer'} is ${remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}`
+                              : `You are ${isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}`
+                            }
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            if (remoteIsScreenSharing || remoteStreamingMode !== 'none') {
+                              setRemoteIsScreenSharing(false);
+                              setRemoteStreamingMode('none');
+                              if (mainPreviewRef.current) {
+                                mainPreviewRef.current.srcObject = null;
+                              }
+                            } else if (isScreenSharing) {
+                              stopScreenShare();
+                            } else if (isStreaming) {
+                              stopMediaStreaming();
+                            }
+                          }}
+                          className="px-3 py-1 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-lg text-xs transition"
+                        >
+                          {(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? 'Close' : 'Stop'}
+                        </button>
+                      </div>
+                      
+                      {/* Video Content */}
+                      <div className="flex-1 flex items-center justify-center bg-black">
+                        <video 
+                          ref={(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? mainPreviewRef : localMainPreviewRef}
+                          className="max-w-full max-h-full object-contain"
+                          playsInline
+                          autoPlay
+                          muted={(isScreenSharing || isStreaming)}
+                        />
                       </div>
                     </div>
-                  )}
-                  
-                  {/* Avatar image if no remote video after peer joins */}
-                  {peerPresent && !remoteHasVideo && (
-                    peerAvatar ? (
-                      <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="text-5xl text-white/70">👤</div>
-                    )
-                  )}
+                  </div>
                 </div>
-                <div 
-                  id="peer-glow" 
-                  className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-pink-400/80" 
-                  style={{ opacity: 0.45, filter: 'blur(60px)' }} 
-                />
-              </div>
-              <div className="text-white/90 text-sm mt-2 text-center max-w-[18rem]">
-                {peerPresent ? (
-                  <span className="truncate inline-block max-w-full align-middle">{peerName || ''}</span>
-                ) : (
-                  <span className="inline-flex items-center">
-                    <span className="align-middle">Waiting for peer</span>
-                    <span className="ml-1 inline-flex items-center">
-                      <span className="w-1.5 h-1.5 bg-white/80 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1.5 h-1.5 bg-white/70 rounded-full animate-bounce ml-1" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1.5 h-1.5 bg-white/60 rounded-full animate-bounce ml-1" style={{ animationDelay: '300ms' }} />
-                    </span>
-                  </span>
-                )}
-              </div>
-            </div>
+
+                {/* Right side - Small peer circles vertically stacked */}
+                <div className="w-32 flex flex-col justify-center gap-8">
+                  {/* Self (host) - Small */}
+                  <div className="flex flex-col items-center">
+                    <div className="relative">
+                      <div 
+                        className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-20 w-20 cursor-pointer hover:scale-105 transition-transform"
+                        onClick={() => camOn && setShowWebcamView(!showWebcamView)}
+                      >
+                        <video 
+                          ref={localTopRef} 
+                          className="h-full w-full object-cover" 
+                          playsInline 
+                          autoPlay
+                          muted 
+                          style={{ 
+                            display: camOn ? 'block' : 'none', 
+                            transform: 'scaleX(-1)' 
+                          }} 
+                        />
+                        {!camOn && (
+                          myAvatar ? (
+                            <img src={myAvatar} alt="Me" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="text-2xl text-white/70">👤</div>
+                          )
+                        )}
+                      </div>
+                      <div 
+                        className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full bg-cyan-400/80" 
+                        style={{ opacity: 0.3, filter: 'blur(30px)' }} 
+                      />
+                    </div>
+                    <div className="text-white/90 text-xs mt-1 text-center max-w-[5rem] truncate">{myName}</div>
+                  </div>
+
+                  {/* Peer - Small */}
+                  <div className="flex flex-col items-center">
+                    <div className="relative">
+                      <div 
+                        className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-20 w-20 cursor-pointer hover:scale-105 transition-transform"
+                        onClick={() => (remoteHasVideo || camOn) && setShowWebcamView(!showWebcamView)}
+                      >
+                        {/* Remote webcam video ONLY - no screen/media streams */}
+                        <video 
+                          ref={remoteTopRef} 
+                          className="h-full w-full object-cover" 
+                          playsInline 
+                          autoPlay
+                          style={{ display: remoteHasVideo ? 'block' : 'none' }} 
+                        />
+                        
+                        {/* Placeholder with loader before peer joins */}
+                        {!peerPresent && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="flex items-end gap-0.5">
+                              <div className="w-1 h-2 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <div className="w-1 h-3 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '120ms' }} />
+                              <div className="w-1 h-4 bg-pink-500 rounded animate-bounce" style={{ animationDelay: '240ms' }} />
+                              <div className="w-1 h-3 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '360ms' }} />
+                              <div className="w-1 h-2 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '480ms' }} />
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Avatar image if no remote video after peer joins */}
+                        {peerPresent && !remoteHasVideo && (
+                          peerAvatar ? (
+                            <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="text-2xl text-white/70">👤</div>
+                          )
+                        )}
+                      </div>
+                      <div 
+                        className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 rounded-full bg-pink-400/80" 
+                        style={{ opacity: 0.3, filter: 'blur(30px)' }} 
+                      />
+                    </div>
+                    <div className="text-white/90 text-xs mt-1 text-center max-w-[5rem]">
+                      {peerPresent ? (
+                        <span className="truncate inline-block max-w-full align-middle">{peerName || ''}</span>
+                      ) : (
+                        <span className="inline-flex items-center">
+                          <span className="align-middle text-[10px]">Waiting</span>
+                          <span className="ml-1 inline-flex items-center">
+                            <span className="w-1 h-1 bg-white/80 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1 h-1 bg-white/70 rounded-full animate-bounce ml-0.5" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1 h-1 bg-white/60 rounded-full animate-bounce ml-0.5" style={{ animationDelay: '300ms' }} />
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* Large Peer Circles (when no preview) */
+              <>
+                {/* Self (host) - Large */}
+                <div className="flex flex-col items-center">
+                  <div className="relative">
+                    <div 
+                      className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-40 w-40 sm:h-48 sm:w-48 md:h-56 md:w-56 lg:h-64 lg:w-64 cursor-pointer hover:scale-105 transition-transform"
+                      onClick={() => camOn && setShowWebcamView(!showWebcamView)}
+                    >
+                      <video 
+                        ref={localPanelRef} 
+                        className="h-full w-full object-cover" 
+                        playsInline 
+                        autoPlay
+                        muted 
+                        style={{ 
+                          display: camOn ? 'block' : 'none', 
+                          transform: 'scaleX(-1)' 
+                        }} 
+                      />
+                      {!camOn && (
+                        myAvatar ? (
+                          <img src={myAvatar} alt="Me" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="text-6xl text-white/70">👤</div>
+                        )
+                      )}
+                    </div>
+                    <div 
+                      className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-cyan-400/80" 
+                      style={{ opacity: 0.5, filter: 'blur(60px)' }} 
+                    />
+                  </div>
+                  <div className="text-white/90 text-lg mt-3 text-center max-w-[12rem] truncate font-medium">{myName}</div>
+                </div>
+
+                {/* Peer - Large */}
+                <div className="flex flex-col items-center">
+                  <div className="relative">
+                    <div 
+                      className="relative z-10 rounded-full overflow-hidden flex items-center justify-center border border-white/20 bg-black/30 h-40 w-40 sm:h-48 sm:w-48 md:h-56 md:w-56 lg:h-64 lg:w-64 cursor-pointer hover:scale-105 transition-transform"
+                      onClick={() => (remoteHasVideo || camOn) && setShowWebcamView(!showWebcamView)}
+                    >
+                      {/* Remote webcam video ONLY - no screen/media streams */}
+                      <video 
+                        ref={remotePanelRef} 
+                        className="h-full w-full object-cover" 
+                        playsInline 
+                        autoPlay
+                        style={{ display: remoteHasVideo ? 'block' : 'none' }} 
+                      />
+                      
+                      {/* Placeholder with loader before peer joins */}
+                      {!peerPresent && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="flex items-end gap-1.5">
+                            <div className="w-3 h-6 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <div className="w-3 h-8 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '120ms' }} />
+                            <div className="w-3 h-12 bg-pink-500 rounded animate-bounce" style={{ animationDelay: '240ms' }} />
+                            <div className="w-3 h-8 bg-pink-400 rounded animate-bounce" style={{ animationDelay: '360ms' }} />
+                            <div className="w-3 h-6 bg-pink-300 rounded animate-bounce" style={{ animationDelay: '480ms' }} />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Avatar image if no remote video after peer joins */}
+                      {peerPresent && !remoteHasVideo && (
+                        peerAvatar ? (
+                          <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="text-6xl text-white/70">👤</div>
+                        )
+                      )}
+                    </div>
+                    <div 
+                      className="pointer-events-none absolute z-0 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full bg-pink-400/80" 
+                      style={{ opacity: 0.45, filter: 'blur(60px)' }} 
+                    />
+                  </div>
+                  <div className="text-white/90 text-lg mt-3 text-center max-w-[20rem] font-medium">
+                    {peerPresent ? (
+                      <span className="truncate inline-block max-w-full align-middle">{peerName || ''}</span>
+                    ) : (
+                      <span className="inline-flex items-center">
+                        <span className="align-middle">Waiting for peer</span>
+                        <span className="ml-2 inline-flex items-center">
+                          <span className="w-2 h-2 bg-white/80 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-2 h-2 bg-white/70 rounded-full animate-bounce ml-1" style={{ animationDelay: '150ms' }} />
+                          <span className="w-2 h-2 bg-white/60 rounded-full animate-bounce ml-1" style={{ animationDelay: '300ms' }} />
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Controls */}
-          <div className="mt-8 flex items-center justify-center gap-3 flex-wrap">
+          {/* Controls - Always centered at bottom */}
+          <div className="flex items-center justify-center gap-3 flex-wrap pb-4">
             {/* Camera */}
             <button 
               onClick={toggleCamera} 
@@ -1204,22 +1305,30 @@ export default function SharedRoom() {
               </svg>
             </button>
           </div>
-          </div>  {/* Close flex-1 main content area */}
 
-          {/* Chat Interface */}
-          {chatOpen && (
-            <div className="mt-8 mx-auto max-w-2xl w-full rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-0 text-white shadow-2xl overflow-hidden">
+        </StarBorder>
+      </main>
+
+      {/* Chat Interface - Fixed position overlay */}
+      {chatOpen && (
+        <div className="fixed bottom-4 right-4 w-96 h-[32rem] rounded-2xl bg-white/10 backdrop-blur-xl border border-white/20 text-white shadow-2xl overflow-hidden flex flex-col z-50">
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-cyan-500/15 via-transparent to-pink-500/15 border-b border-white/10">
                 <div className="text-sm text-white/90 flex items-center gap-2">
                   <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
                   Messages
                 </div>
-                <div className="text-xs text-white/70">{peerPresent ? 'Connected' : 'Waiting for peer…'}</div>
+                <button 
+                  onClick={() => setChatOpen(false)}
+                  className="text-white/70 hover:text-white text-lg transition"
+                  title="Close chat"
+                >
+                  ×
+                </button>
               </div>
 
               {/* Messages */}
-              <div id="chatScroll" className="h-72 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              <div id="chatScroll" className="flex-1 overflow-auto space-y-3 px-4 py-3 bg-white/[0.03] [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {chat.map(m => (
                   <div key={m.id} className={`flex items-end ${m.fromSelf ? 'justify-end' : 'justify-start'}`}>
                     {!m.fromSelf && (
@@ -1307,8 +1416,6 @@ export default function SharedRoom() {
               </div>
             </div>
           )}
-        </StarBorder>
-      </main>
 
       {/* Webcam View Overlay */}
       {showWebcamView && (
