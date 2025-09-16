@@ -937,8 +937,8 @@ export default function SharedRoom() {
       </div>
 
       <main className="relative z-10 min-h-screen flex items-center justify-center p-6">
-        <StarBorder as={"div"} className="max-w-[64rem] w-[92vw] text-center" color="#88ccff" speed="8s" thickness={2}>
-          <div className="py-4">
+        <StarBorder as={"div"} className="w-[90vw] h-[90vh] flex flex-col" color="#88ccff" speed="8s" thickness={2}>
+          <div className="py-4 text-center">
             <div className="w-full max-w-[52rem] mx-auto">
               <TextPressure 
                 text="Shared Room" 
@@ -959,82 +959,62 @@ export default function SharedRoom() {
           </div>
 
           {/* Room header */}
-          <div className="mt-2 text-white/80 text-sm">
+          <div className="mt-2 text-white/80 text-sm text-center">
             Room: <span className="text-white font-semibold">{room}</span> • Participants: {participants}
           </div>
 
-          {/* Main Preview Section for Screen Sharing and Media Streaming */}
-          <div className="mt-6 mx-auto max-w-6xl space-y-4">
-            {/* Remote screen share/media stream - MAIN RECTANGLE 90% SCREEN */}
-            {(remoteIsScreenSharing || remoteStreamingMode !== 'none') && (
-              <div className="fixed inset-4 z-40 bg-black/95 backdrop-blur-lg border border-white/20 rounded-3xl overflow-hidden shadow-2xl">
-                <div className="h-full flex flex-col">
+          {/* Main content area - flexible height */}
+          <div className="flex-1 flex flex-col justify-center px-4">
+            {/* Screen Sharing and Media Streaming Preview Area - INSIDE MAIN RECTANGLE */}
+            {(remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenSharing || isStreaming) && (
+              <div className="mb-6 bg-black/95 backdrop-blur-lg border border-white/20 rounded-2xl overflow-hidden shadow-2xl">
+                <div className="flex flex-col h-[300px]">
                   {/* Header */}
-                  <div className="flex items-center justify-between p-4 bg-black/60 border-b border-white/10">
+                  <div className="flex items-center justify-between p-3 bg-black/60 border-b border-white/10">
                     <div className="flex items-center gap-3">
-                      <span className={`w-3 h-3 rounded-full animate-pulse ${remoteIsScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
-                      <span className="text-white font-medium">{peerName || 'Peer'} is {remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}</span>
+                      <span className={`w-3 h-3 rounded-full animate-pulse ${
+                        (isScreenSharing || remoteIsScreenSharing) ? 'bg-purple-400' : 'bg-orange-400'
+                      }`}></span>
+                      <span className="text-white font-medium text-sm">
+                        {(remoteIsScreenSharing || remoteStreamingMode !== 'none') 
+                          ? `${peerName || 'Peer'} is ${remoteIsScreenSharing ? 'screen sharing' : 'streaming media'}`
+                          : `You are ${isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}`
+                        }
+                      </span>
                     </div>
                     <button 
                       onClick={() => {
-                        setRemoteIsScreenSharing(false);
-                        setRemoteStreamingMode('none');
-                        if (mainPreviewRef.current) {
-                          mainPreviewRef.current.srcObject = null;
+                        if (remoteIsScreenSharing || remoteStreamingMode !== 'none') {
+                          setRemoteIsScreenSharing(false);
+                          setRemoteStreamingMode('none');
+                          if (mainPreviewRef.current) {
+                            mainPreviewRef.current.srcObject = null;
+                          }
+                        } else if (isScreenSharing) {
+                          stopScreenShare();
+                        } else if (isStreaming) {
+                          stopMediaStreaming();
                         }
                       }}
-                      className="bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-full p-2 transition"
-                      title="Close preview"
+                      className="px-3 py-1 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-lg text-xs transition"
                     >
-                      ✕
+                      {(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? 'Close' : 'Stop'}
                     </button>
                   </div>
                   
                   {/* Video Content */}
                   <div className="flex-1 flex items-center justify-center bg-black">
                     <video 
-                      ref={mainPreviewRef}
+                      ref={(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? mainPreviewRef : localMainPreviewRef}
                       className="max-w-full max-h-full object-contain"
                       playsInline
                       autoPlay
+                      muted={(isScreenSharing || isStreaming)}
                     />
                   </div>
                 </div>
               </div>
             )}
-            
-            {/* Local screen share/media stream - MAIN RECTANGLE 90% SCREEN */}
-            {(isScreenSharing || isStreaming) && (
-              <div className="fixed inset-4 z-40 bg-black/95 backdrop-blur-lg border border-white/20 rounded-3xl overflow-hidden shadow-2xl">
-                <div className="h-full flex flex-col">
-                  {/* Header */}
-                  <div className="flex items-center justify-between p-4 bg-black/60 border-b border-white/10">
-                    <div className="flex items-center gap-3">
-                      <span className={`w-3 h-3 rounded-full animate-pulse ${isScreenSharing ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
-                      <span className="text-white font-medium">You are {isScreenSharing ? 'screen sharing' : `streaming: ${currentMediaFile?.name}`}</span>
-                    </div>
-                    <button 
-                      onClick={isScreenSharing ? stopScreenShare : stopMediaStreaming}
-                      className="px-4 py-2 bg-red-500/80 hover:bg-red-500 border border-red-400/40 text-white rounded-xl text-sm transition"
-                    >
-                      Stop Sharing
-                    </button>
-                  </div>
-                  
-                  {/* Video Content */}
-                  <div className="flex-1 flex items-center justify-center bg-black">
-                    <video 
-                      ref={localMainPreviewRef}
-                      className="max-w-full max-h-full object-contain"
-                      playsInline
-                      autoPlay
-                      muted
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
 
           {/* Avatars/Video Circles */}
           <div className="mt-6 flex items-center justify-center gap-10 sm:gap-16 md:gap-20 lg:gap-28 px-2">
@@ -1224,6 +1204,7 @@ export default function SharedRoom() {
               </svg>
             </button>
           </div>
+          </div>  {/* Close flex-1 main content area */}
 
           {/* Chat Interface */}
           {chatOpen && (
