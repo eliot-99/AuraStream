@@ -53,6 +53,38 @@ export default function SharedRoom() {
   const [remoteHasVideo, setRemoteHasVideo] = useState<boolean>(false);
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
   const [peerAvatar, setPeerAvatar] = useState<string | null>(null);
+
+  // Initialize user data from auth token and sessionStorage
+  useEffect(() => {
+    // Load stored avatar for this room
+    const storedMyAvatar = sessionStorage.getItem(`room:${room}:myAvatar`);
+    const storedMyName = sessionStorage.getItem(`room:${room}:myName`);
+    
+    if (storedMyAvatar) {
+      setMyAvatar(storedMyAvatar);
+    }
+    if (storedMyName) {
+      setMyName(storedMyName);
+    }
+
+    // Try to extract user info from auth token if available
+    const authToken = localStorage.getItem('auth');
+    if (authToken) {
+      try {
+        const payload = JSON.parse(atob(authToken.split('.')[1]));
+        if (payload.avatar && !storedMyAvatar) {
+          setMyAvatar(payload.avatar);
+          sessionStorage.setItem(`room:${room}:myAvatar`, payload.avatar);
+        }
+        if (payload.username && !storedMyName) {
+          setMyName(payload.username);
+          sessionStorage.setItem(`room:${room}:myName`, payload.username);
+        }
+      } catch (e) {
+        console.log('Could not parse auth token for user info:', e);
+      }
+    }
+  }, [room]);
   const [turnStatus, setTurnStatus] = useState<'unknown'|'ok'|'fail'|'missing'>('unknown');
   const [turnMessage, setTurnMessage] = useState<string | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -342,10 +374,9 @@ export default function SharedRoom() {
           setRemoteIsScreenSharing(true);
         }
         
-        // CLEAR any webcam video in avatar circle
-        setRemoteWebcamStream(null);
-        if (remoteTopRef.current) remoteTopRef.current.srcObject = null;
-        if (remotePanelRef.current) remotePanelRef.current.srcObject = null;
+        // NOTE: Don't clear webcam streams immediately - they might still be valid
+        // Only clear them if we detect this stream should replace the webcam
+        console.log('Screen/Media stream detected - keeping existing webcam streams if present');
         
         // SET main preview
         if (mainPreviewRef.current) {
@@ -968,8 +999,8 @@ export default function SharedRoom() {
       </div>
 
       <main className="relative z-10 min-h-screen flex items-center justify-center p-6">
-        <StarBorder as={"div"} className="w-[90vw] h-[90vh] flex flex-col" color="#88ccff" speed="8s" thickness={2}>
-          <div className="py-4 text-center">
+        <StarBorder as={"div"} className="w-[90vw] h-[92vh] flex flex-col" color="#88ccff" speed="8s" thickness={2}>
+          <div className="py-2 text-center">
             <div className="w-full max-w-[52rem] mx-auto">
               <TextPressure 
                 text="Shared Room" 
@@ -990,12 +1021,12 @@ export default function SharedRoom() {
           </div>
 
           {/* Room header */}
-          <div className="mt-2 text-white/80 text-sm text-center">
+          <div className="mb-2 text-white/80 text-sm text-center">
             Room: <span className="text-white font-semibold">{room}</span> • Participants: {participants}
           </div>
 
           {/* Main content area - flexible height */}
-          <div className="flex-1 flex px-4 py-4">
+          <div className="flex-1 flex px-4 pb-4 min-h-0">
             {/* Conditional Layout: Preview active vs large circles */}
             {(() => {
               const hasRemoteContent = remoteIsScreenSharing || remoteStreamingMode !== 'none';
@@ -1052,14 +1083,31 @@ export default function SharedRoom() {
                       </div>
                       
                       {/* Video Content */}
-                      <div className="flex-1 flex items-center justify-center bg-black">
-                        <video 
-                          ref={(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? mainPreviewRef : localMainPreviewRef}
-                          className="max-w-full max-h-full object-contain"
-                          playsInline
-                          autoPlay
-                          muted={(isScreenSharing || isStreaming)}
-                        />
+                      <div className="flex-1 flex items-center justify-center bg-black min-h-0">
+                        {(remoteIsScreenSharing || remoteStreamingMode !== 'none') ? (
+                          <video 
+                            ref={mainPreviewRef}
+                            className="w-full h-full object-contain"
+                            playsInline
+                            autoPlay
+                            style={{ display: remoteMediaStream ? 'block' : 'none' }}
+                          />
+                        ) : (
+                          <video 
+                            ref={localMainPreviewRef}
+                            className="w-full h-full object-contain"
+                            playsInline
+                            autoPlay
+                            muted
+                            style={{ display: (isScreenSharing || isStreaming) ? 'block' : 'none' }}
+                          />
+                        )}
+                        {!remoteMediaStream && !isScreenSharing && !isStreaming && (
+                          <div className="text-white/50 text-center">
+                            <div className="text-4xl mb-2">📺</div>
+                            <div>Waiting for content...</div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1144,8 +1192,17 @@ export default function SharedRoom() {
                               onLoad={() => console.log('Avatar image loaded successfully:', peerAvatar)}
                             />
                           ) : (
-                            <div className="text-2xl text-white/70">👤</div>
+                            <div className="text-2xl text-white/70">
+                              {remoteIsScreenSharing ? '🖥️' : ''}
+                            </div>
                           )
+                        )}
+
+                        {/* Show screen sharing indicator when peer is sharing but no webcam */}
+                        {peerPresent && remoteIsScreenSharing && !remoteHasVideo && (
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-purple-500 rounded-full flex items-center justify-center text-[8px]">
+                            📺
+                          </div>
                         )}
                       </div>
                       <div 
@@ -1250,8 +1307,17 @@ export default function SharedRoom() {
                             onLoad={() => console.log('Large avatar image loaded successfully:', peerAvatar)}
                           />
                         ) : (
-                          <div className="text-6xl text-white/70">👤</div>
+                          <div className="text-6xl text-white/70">
+                            {remoteIsScreenSharing ? '�️' : '�👤'}
+                          </div>
                         )
+                      )}
+
+                      {/* Show screen sharing indicator when peer is sharing but no webcam */}
+                      {peerPresent && remoteIsScreenSharing && !remoteHasVideo && (
+                        <div className="absolute -top-2 -right-2 w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs">
+                          📺
+                        </div>
                       )}
                     </div>
                     <div 
