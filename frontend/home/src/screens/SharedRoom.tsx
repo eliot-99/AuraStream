@@ -305,11 +305,42 @@ export default function SharedRoom() {
         videoTrack.label.includes('screen')
       );
       
-      // Determine if this is screen/media content vs webcam
-      if (remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenShare) {
+      // Enhanced screen sharing detection
+      const hasMultipleVideoTracks = stream.getVideoTracks().length > 1;
+      const videoTrackLabel = videoTrack?.label || '';
+      const videoTrackKind = videoTrack?.kind || '';
+      
+      // More comprehensive screen share detection
+      const isDefinitelyScreenShare = isScreenShare || 
+        videoTrackLabel.toLowerCase().includes('screen') ||
+        videoTrackLabel.toLowerCase().includes('display') ||
+        hasMultipleVideoTracks || 
+        (videoTrack && videoTrack.getConstraints?.()?.displaySurface);
+      
+      // Check if we should route to main rectangle (screen/media content)
+      const shouldRouteToMainPreview = isDefinitelyScreenShare || 
+        remoteIsScreenSharing || 
+        remoteStreamingMode !== 'none';
+        
+      console.log('Stream analysis:', {
+        hasVideo,
+        isScreenShare,
+        isDefinitelyScreenShare,
+        shouldRouteToMainPreview,
+        videoTrackLabel,
+        remoteIsScreenSharing,
+        remoteStreamingMode
+      });
+      
+      if (shouldRouteToMainPreview) {
         // THIS IS SCREEN SHARING OR MEDIA - GOES TO MAIN RECTANGLE ONLY
         console.log('Routing to MAIN RECTANGLE: Screen/Media stream');
         setRemoteMediaStream(stream);
+        
+        // Update state to trigger layout change
+        if (isDefinitelyScreenShare && !remoteIsScreenSharing) {
+          setRemoteIsScreenSharing(true);
+        }
         
         // CLEAR any webcam video in avatar circle
         setRemoteWebcamStream(null);
@@ -322,7 +353,7 @@ export default function SharedRoom() {
           mainPreviewRef.current.play().catch(err => console.log('Main preview failed:', err));
         }
         
-        pushToast(`Remote ${isScreenShare ? 'screen sharing' : 'media streaming'} connected!`, 'success');
+        pushToast(`Remote ${isDefinitelyScreenShare ? 'screen sharing' : 'media streaming'} connected!`, 'success');
         
       } else {
         // THIS IS REGULAR WEBCAM - GOES TO AVATAR CIRCLE ONLY
@@ -966,7 +997,21 @@ export default function SharedRoom() {
           {/* Main content area - flexible height */}
           <div className="flex-1 flex px-4 py-4">
             {/* Conditional Layout: Preview active vs large circles */}
-            {(remoteIsScreenSharing || remoteStreamingMode !== 'none' || isScreenSharing || isStreaming) ? (
+            {(() => {
+              const hasRemoteContent = remoteIsScreenSharing || remoteStreamingMode !== 'none';
+              const hasLocalContent = isScreenSharing || isStreaming;
+              const showPreviewLayout = hasRemoteContent || hasLocalContent;
+              
+              console.log('Layout decision:', {
+                remoteIsScreenSharing,
+                remoteStreamingMode,
+                isScreenSharing,
+                isStreaming,
+                showPreviewLayout
+              });
+              
+              return showPreviewLayout;
+            })() ? (
               /* LAYOUT WITH PREVIEW: Preview left, small circles right */
               <>
                 {/* Left side - Preview Area */}
@@ -1088,7 +1133,16 @@ export default function SharedRoom() {
                         {/* Avatar image if no remote video after peer joins */}
                         {peerPresent && !remoteHasVideo && (
                           peerAvatar ? (
-                            <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
+                            <img 
+                              src={peerAvatar} 
+                              alt="Peer" 
+                              className="h-full w-full object-cover" 
+                              onError={(e) => {
+                                console.log('Avatar image failed to load:', peerAvatar);
+                                setPeerAvatar(null);
+                              }}
+                              onLoad={() => console.log('Avatar image loaded successfully:', peerAvatar)}
+                            />
                           ) : (
                             <div className="text-2xl text-white/70">👤</div>
                           )
@@ -1185,7 +1239,16 @@ export default function SharedRoom() {
                       {/* Avatar image if no remote video after peer joins */}
                       {peerPresent && !remoteHasVideo && (
                         peerAvatar ? (
-                          <img src={peerAvatar} alt="Peer" className="h-full w-full object-cover" />
+                          <img 
+                            src={peerAvatar} 
+                            alt="Peer" 
+                            className="h-full w-full object-cover" 
+                            onError={(e) => {
+                              console.log('Large avatar image failed to load:', peerAvatar);
+                              setPeerAvatar(null);
+                            }}
+                            onLoad={() => console.log('Large avatar image loaded successfully:', peerAvatar)}
+                          />
                         ) : (
                           <div className="text-6xl text-white/70">👤</div>
                         )
